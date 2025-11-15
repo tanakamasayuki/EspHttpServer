@@ -1,0 +1,195 @@
+# ESP32 WebServer ライブラリ 仕様書
+
+## 0. 概要
+ESP32 の esp_http_server をベースにした軽量 Web サーバーライブラリ。  
+動的ルーティング、静的ファイル配信（FS/メモリFS）、テンプレート、headInjection、gzip 自動処理などを備える。  
+
+---
+
+## 1. Response API
+
+### 1.1 動的 send
+```
+void send(int code, const char* type,
+          const uint8_t* data, size_t len);
+void send(int code, const char* type,
+          const String& body);
+
+void sendText(int code, const char* type,
+              const char* text);
+void sendText(int code, const char* type,
+              const String& text);
+```
+
+### 1.2 チャンク送信
+```
+void beginChunked(int code, const char* type);
+void sendChunk(const uint8_t* data, size_t len);
+void sendChunk(const char* text);
+void sendChunk(const String& text);
+void endChunked();
+```
+
+### 1.3 静的送信
+```
+void sendStatic();                     // serveStatic が設定した StaticInfo に従う
+void sendFile(fs::FS& fs, const String& fsPath);
+```
+
+### 1.4 リダイレクト
+```
+void redirect(const char* location, int status = 302);
+```
+
+---
+
+## 2. テンプレートエンジン
+
+### 2.1 設定
+```
+using TemplateHandler =
+    std::function<bool(const String& key, Print& out)>;
+
+void setTemplateHandler(TemplateHandler cb);
+void clearTemplateHandler();
+```
+
+### 2.2 挙動
+- Content-Type が HTML の場合のみテンプレート処理
+- `.gz` の場合はテンプレート適用不可
+- `{{key}}` → HTMLエスケープして挿入
+- `{{{key}}}` → 生値挿入
+- ハンドラが `false` を返した場合はそのまま `{{key}}` を出す
+
+---
+
+## 3. headInjection
+
+### 3.1 設定
+```
+void setHeadInjection(const char* snippet); // 非コピー
+void setHeadInjection(const String& snippet);
+void clearHeadInjection();
+```
+
+### 3.2 挙動
+- HTML の `<head>` タグの直後に snippet を挿入
+- `.gz` の場合は無効（そのまま送信するため）
+
+---
+
+## 4. 静的ファイルルーティング：serveStatic
+
+### 4.1 StaticInfo
+```
+struct StaticInfo {
+    String uri;
+    String relPath;
+    String fsPath;
+    bool   exists;
+    bool   isDir;
+    bool   isGzipped;
+    String logicalPath;
+};
+```
+
+### 4.2 StaticHandler
+```
+using StaticHandler =
+    std::function<void(const StaticInfo& info,
+                       Request& req,
+                       Response& res)>;
+```
+
+---
+
+## 4.3 FS版 serveStatic
+```
+void serveStatic(const String& uriPrefix,
+                 fs::FS& fs,
+                 const String& basePath,
+                 StaticHandler handler);
+```
+
+### FS版挙動
+- `uriPrefix` を除去した relPath を解析
+- basePath + relPath を参照
+- `.gz` があれば優先
+- StaticInfo を構築して Response にセット
+- handler 内で必ず 1 回 sendStatic/sendFile/redirect を呼ぶ
+
+---
+
+## 4.4 メモリFS版 serveStatic（配列 3つ + count）
+```
+void serveStatic(const String& uriPrefix,
+                 const char* const* paths,
+                 const uint8_t* const* data,
+                 const size_t* sizes,
+                 size_t fileCount,
+                 StaticHandler handler);
+```
+
+### メモリFS挙動
+- paths[i] と relPath を照合して一致を探す
+- `.gz` の優先ルールも FS と同様
+- Response 内に backend=MemFS の静的コンテキストをセット
+- handler の中で sendStatic() を呼ぶと data/size をストリーミング送信
+
+---
+
+## 5. sendStatic の共通挙動（FS / メモリFS）
+1. gzip の場合  
+   - `Content-Encoding: gzip`  
+   - テンプレート／headInjection 無効  
+   - バイト列をそのまま送信
+2. プレーンファイル  
+   - MIME 判定  
+   - HTML の場合のみテンプレ＋headInjection 適用  
+   - チャンクストリームで送信
+
+---
+
+## 6. 使用例
+
+### 動的
+```
+res.setTemplateHandler([](const String& key, Print& out){
+    if (key == "name") { out.print("TANAKA"); return true; }
+    return false;
+});
+res.setHeadInjection("<script src='/app.js'></script>");
+res.sendText(200, "text/html", htmlTemplate);
+```
+
+### FS 静的
+```
+server.serveStatic("/view", LittleFS, "/tmpl",
+  [&](const StaticInfo& info, Request& req, Response& res){
+      res.setTemplateHandler(...);
+      res.setHeadInjection("<script src='/app.js'></script>");
+      res.sendStatic();
+  });
+```
+
+### メモリFS 静的
+```
+server.serveStatic("/static",
+                   g_paths, g_data, g_sizes, g_fileCount,
+                   [&](const StaticInfo& info, Request& req, Response& res){
+      if (!info.isGzipped && info.logicalPath.endsWith(".html"))
+          res.setHeadInjection("<script src='/static/app.js'></script>");
+      res.sendStatic();
+});
+```
+
+### SPA fallback
+```
+if (!info.exists) {
+    res.sendFile(LittleFS, "/app/index.html");
+    return;
+}
+res.sendStatic();
+```
+
+---
