@@ -1,0 +1,11 @@
+{
+  "heading": "組み込みアセット配信",
+  "description": "このページは flash に焼き込んだ JSON と HTML から描画されています。",
+  "itemList": [
+    { "name": "Sensor", "price": "¥500" },
+    { "name": "Relay", "price": "¥300" }
+  ],
+  "footer": {
+    "$text": "// en: Served from flash  // ja: フラッシュから配信"
+  }
+}

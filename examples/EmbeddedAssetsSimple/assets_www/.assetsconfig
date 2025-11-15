@@ -1,0 +1,21 @@
+[general]
+# en: Arduino CLI Wrapper reads this to know how to emit assets_*_embed.h.
+# ja: Arduino CLI Wrapper が assets_*_embed.h を生成する際の設定です。
+#dir = ../
+#header_name = assets_*_embed.h
+#prefix = assets_*_
+
+[minify]
+enable = true
+html = true
+css = true
+js = true
+keep_comments = false
+write_output_file = true
+output_dir = .minified
+
+[gzip]
+enable = true
+patterns = **/*.css, **/*.js
+min_size = 256
+suffix = .gz

@@ -1,0 +1,3 @@
+# en: Ignore generated and temporary directories.
+# ja: 生成物や一時ディレクトリを除外。
+.*

@@ -1,0 +1,44 @@
+// en: Simple JSON renderer similar to the assetsTest example.
+// ja: assetsTest と同様のシンプルな JSON レンダラー。
+document.addEventListener('DOMContentLoaded', async () => {
+  const htmlFile = location.pathname.split('/').pop();
+  const jsonFile = `${htmlFile}.json`;
+  try {
+    const res = await fetch(jsonFile);
+    if (!res.ok) throw new Error(`fetch failed: ${res.status}`);
+    const data = await res.json();
+    render(data);
+  } catch (err) {
+    console.warn('skip JSON rendering:', err);
+  }
+});
+
+function render(data) {
+  for (const key in data) {
+    const value = data[key];
+    const el = document.getElementById(key);
+    if (!el) continue;
+
+    if (Array.isArray(value)) {
+      const template = el.querySelector(':scope > *');
+      if (!template) continue;
+      el.innerHTML = '';
+      value.forEach((item) => {
+        const clone = template.cloneNode(true);
+        Object.entries(item).forEach(([childId, text]) => {
+          const target = clone.querySelector(`#${childId}`);
+          if (target) target.textContent = text;
+        });
+        el.appendChild(clone);
+      });
+      continue;
+    }
+
+    if (typeof value === 'object' && value.$text) {
+      el.textContent = value.$text;
+      continue;
+    }
+
+    el.textContent = value;
+  }
+}
