@@ -67,6 +67,15 @@ server.serveStatic("/static", g_paths, g_data, g_sizes, g_fileCount,
 
 For SPA fallbacks, check `info.exists` and fall back to `sendFile()` with your index document when needed.
 
+### Debug Levels
+
+Select the Arduino board's **Core Debug Level** (or pass `--build-property build.code.debug=<level>` when using `arduino-cli`) to control logging. EspHttpServer relies on `ESP_LOGx` macros and the default `None` suppresses every log (even `ESP_LOGE`), so raise it during development if you want diagnostics:
+
+- `None` – disables all logging
+- `Error` – only critical failures (`ESP_LOGE`)
+- `Info` – request lines and static route resolutions
+- `Debug` – parameter dumps and detailed static file resolution
+
 ## Examples
 
 - **BasicDynamic** – Minimal dynamic handler returning plain text.
@@ -74,6 +83,7 @@ For SPA fallbacks, check `info.exists` and fall back to `sendFile()` with your i
 - **TemplateHead** – Demonstrates template handlers plus head injection.
 - **StaticFS** – Serves files uploaded from `examples/StaticFS/data` (use Arduino IDE/CLI upload or VS Code extension).
 - **EmbeddedAssetsSimple** – Demonstrates converting `examples/EmbeddedAssetsSimple/assets_www` into `assets_www_embed.h` and serving flash-resident files over `/embed`.
+- **PathParams** – Shows multi-parameter routes (`:id`) and wildcard captures via `req.pathParam()`.
 
 ## VS Code Workflow
 

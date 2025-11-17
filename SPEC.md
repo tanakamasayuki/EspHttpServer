@@ -193,8 +193,9 @@ void serveStatic(const String& uriPrefix,
 | Info   | 通常アクセスの追跡     | 接続した IP、アクセスされた URI、HTTP メソッド|
 | Debug  | 詳細な内部情報         | パラメータ解析結果、テンプレートで差し込んだ値など |
 
-- デフォルトは Error。`Config` 経由で Info/Debug に引き上げるとログ量が増える。
+- デフォルトは None（すべてのログを抑制）。Arduino IDE/CLI の Core Debug Level を Error/Info/Debug へ変更するとログが出力される。
 - Debug レベルでは個人情報が含まれる可能性があるため、開発時のみ使用する。
+- Arduino IDE/CLI の **Core Debug Level** 設定（`CORE_DEBUG_LEVEL`）でビルド時に決定され、`ESP_LOGx` の出力レベルへ反映される（デフォルトの `None` はすべてのログを抑制する）。
 
 ## 9. 使用例
 

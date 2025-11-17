@@ -5,6 +5,11 @@
 #include <algorithm>
 #include <cctype>
 
+#ifdef CORE_DEBUG_LEVEL
+#undef LOG_LOCAL_LEVEL
+#define LOG_LOCAL_LEVEL CORE_DEBUG_LEVEL
+#endif
+
 namespace EspHttpServer
 {
 
@@ -66,13 +71,6 @@ namespace EspHttpServer
         private:
             String &_target;
         };
-
-        String toStatusString(int code)
-        {
-            char buffer[16];
-            snprintf(buffer, sizeof(buffer), "%d", code);
-            return String(buffer);
-        }
 
         String determineMimeType(const String &path)
         {
@@ -270,7 +268,7 @@ namespace EspHttpServer
         }
 
         StaticInputStream(const uint8_t *data, size_t size)
-            : _data(data), _size(size), _useFs(false)
+            : _fs(nullptr), _useFs(false), _data(data), _size(size)
         {
         }
 
@@ -366,6 +364,42 @@ namespace EspHttpServer
         }
     }
 
+    String Request::pathParam(const String &key) const
+    {
+        for (const auto &entry : _pathParams)
+        {
+            if (entry.first == key)
+            {
+                return entry.second;
+            }
+        }
+        return String();
+    }
+
+    bool Request::hasPathParam(const String &key) const
+    {
+        for (const auto &entry : _pathParams)
+        {
+            if (entry.first == key)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    void Request::setPathInfo(const String &path, const std::vector<std::pair<String, String>> &params)
+    {
+        _normalizedPath = path;
+        _pathParams = params;
+    }
+
+    void Request::clearPathInfo()
+    {
+        _normalizedPath = "/";
+        _pathParams.clear();
+    }
+
     // -------- Response --------
 
     Response::Response(httpd_req_t *raw) { attachRequest(raw); }
@@ -412,8 +446,7 @@ namespace EspHttpServer
         if (!_raw)
             return;
         httpd_resp_set_type(_raw, type);
-        const String status = toStatusString(code);
-        httpd_resp_set_status(_raw, status.c_str());
+        httpd_resp_set_status(_raw, statusString(code));
         httpd_resp_send(_raw, reinterpret_cast<const char *>(data), len);
     }
 
@@ -438,8 +471,7 @@ namespace EspHttpServer
             return;
         _chunked = true;
         httpd_resp_set_type(_raw, type);
-        const String status = toStatusString(code);
-        httpd_resp_set_status(_raw, status.c_str());
+        httpd_resp_set_status(_raw, statusString(code));
     }
 
     void Response::sendChunk(const uint8_t *data, size_t len)
@@ -555,8 +587,7 @@ namespace EspHttpServer
     {
         if (!_raw)
             return;
-        const String statusStr = toStatusString(status);
-        httpd_resp_set_status(_raw, statusStr.c_str());
+        httpd_resp_set_status(_raw, statusString(status));
         httpd_resp_set_hdr(_raw, "Location", location);
         httpd_resp_send(_raw, nullptr, 0);
     }
@@ -595,6 +626,12 @@ namespace EspHttpServer
         _staticFs = nullptr;
         _memData = nullptr;
         _memSize = 0;
+    }
+
+    const char *Response::statusString(int code)
+    {
+        snprintf(_statusBuffer, sizeof(_statusBuffer), "%d", code);
+        return _statusBuffer;
     }
 
     bool Response::streamHtmlFromSource(StaticInputStream &stream)
@@ -938,15 +975,17 @@ namespace EspHttpServer
     {
         if (_handle)
             return true;
-        esp_err_t err = httpd_start(&_handle, &cfg);
+        httpd_config_t localCfg = cfg;
+        localCfg.uri_match_fn = httpd_uri_match_wildcard;
+        esp_err_t err = httpd_start(&_handle, &localCfg);
         if (err != ESP_OK)
         {
             ESP_LOGE(TAG, "httpd_start failed: %s", esp_err_to_name(err));
             return false;
         }
-        for (auto &entry : _handlers)
+        for (auto &hook : _methodHooks)
         {
-            registerHandler(entry.get());
+            registerMethodHook(hook.get());
         }
         return true;
     }
@@ -967,24 +1006,27 @@ namespace EspHttpServer
             return;
         }
 
-        auto entry = std::make_unique<HandlerEntry>();
-        entry->type = HandlerType::Dynamic;
-        entry->routeHandler = std::move(handler);
-        entry->uriPrefix = uri;
-        entry->uriPattern = uri;
-        entry->uriDef.uri = entry->uriPattern.c_str();
-        entry->uriDef.method = method;
-        entry->uriDef.handler = &Server::handleHttpRequest;
-        entry->uriDef.user_ctx = entry.get();
-        entry->uriDef.uri_match_fn = nullptr;
-        entry->owner = this;
-
-        HandlerEntry *entryPtr = entry.get();
-        _handlers.push_back(std::move(entry));
-        if (_handle)
+        std::vector<RouteSegment> segments;
+        int score = 0;
+        if (!parseRoutePattern(uri, segments, score))
         {
-            registerHandler(entryPtr);
+            ESP_LOGE(TAG, "Invalid route pattern: %s", uri.c_str());
+            return;
         }
+
+        if (!ensureMethodHook(method))
+        {
+            ESP_LOGE(TAG, "Failed to register method hook");
+            return;
+        }
+
+        DynamicRoute route;
+        route.method = method;
+        route.pattern = uri;
+        route.segments = std::move(segments);
+        route.score = score;
+        route.handler = std::move(handler);
+        _dynamicRoutes.push_back(std::move(route));
     }
 
     void Server::serveStatic(const String &uriPrefix,
@@ -999,27 +1041,26 @@ namespace EspHttpServer
         auto entry = std::make_unique<HandlerEntry>();
         entry->type = HandlerType::StaticFS;
         entry->staticHandler = std::move(handler);
-        entry->uriPrefix = uriPrefix;
+        String prefix = uriPrefix;
+        if (prefix.isEmpty())
+        {
+            prefix = "/";
+        }
+        if (!prefix.startsWith("/"))
+        {
+            prefix = "/" + prefix;
+        }
+        while (prefix.length() > 1 && prefix.endsWith("/"))
+        {
+            prefix.remove(prefix.length() - 1);
+        }
+        entry->uriPrefix = prefix;
         entry->basePath = basePath;
         entry->fs = &fs;
-        entry->uriPattern = uriPrefix;
-        if (!entry->uriPattern.endsWith("*"))
-        {
-            entry->uriPattern += "*";
-        }
-        entry->uriDef.uri = entry->uriPattern.c_str();
-        entry->uriDef.method = HTTP_GET;
-        entry->uriDef.handler = &Server::handleHttpRequest;
-        entry->uriDef.user_ctx = entry.get();
-        entry->uriDef.uri_match_fn = httpd_uri_match_wildcard;
         entry->owner = this;
 
-        HandlerEntry *entryPtr = entry.get();
         _handlers.push_back(std::move(entry));
-        if (_handle)
-        {
-            registerHandler(entryPtr);
-        }
+        ensureMethodHook(HTTP_GET);
     }
 
     void Server::serveStatic(const String &uriPrefix,
@@ -1037,85 +1078,41 @@ namespace EspHttpServer
         auto entry = std::make_unique<HandlerEntry>();
         entry->type = HandlerType::StaticMem;
         entry->staticHandler = std::move(handler);
-        entry->uriPrefix = uriPrefix;
-        entry->uriPattern = uriPrefix;
-        if (!entry->uriPattern.endsWith("*"))
+        String prefix = uriPrefix;
+        if (prefix.isEmpty())
         {
-            entry->uriPattern += "*";
+            prefix = "/";
         }
-        entry->uriDef.uri = entry->uriPattern.c_str();
-        entry->uriDef.method = HTTP_GET;
-        entry->uriDef.handler = &Server::handleHttpRequest;
-        entry->uriDef.user_ctx = entry.get();
-        entry->uriDef.uri_match_fn = httpd_uri_match_wildcard;
+        if (!prefix.startsWith("/"))
+        {
+            prefix = "/" + prefix;
+        }
+        while (prefix.length() > 1 && prefix.endsWith("/"))
+        {
+            prefix.remove(prefix.length() - 1);
+        }
+        entry->uriPrefix = prefix;
         entry->memPaths = paths;
         entry->memData = data;
         entry->memSizes = sizes;
         entry->memCount = fileCount;
         entry->owner = this;
 
-        HandlerEntry *entryPtr = entry.get();
         _handlers.push_back(std::move(entry));
-        if (_handle)
-        {
-            registerHandler(entryPtr);
-        }
+        ensureMethodHook(HTTP_GET);
     }
 
-    esp_err_t Server::handleHttpRequest(httpd_req_t *req)
+    esp_err_t Server::handleDynamicHttpRequest(httpd_req_t *req)
     {
-        auto *entry = static_cast<HandlerEntry *>(req->user_ctx);
-        if (!entry)
+        auto *server = static_cast<Server *>(req->user_ctx);
+        if (!server)
         {
             return ESP_FAIL;
         }
-
-        Request request(req);
-        Response response(req);
-
-        switch (entry->type)
-        {
-        case HandlerType::Dynamic:
-            if (entry->routeHandler)
-            {
-                entry->routeHandler(request, response);
-            }
-            break;
-        case HandlerType::StaticFS:
-            if (entry->owner)
-            {
-                entry->owner->setupStaticInfoFromFS(entry, request, response);
-            }
-            break;
-        case HandlerType::StaticMem:
-            if (entry->owner)
-            {
-                entry->owner->setupStaticInfoFromMemory(entry, request, response);
-            }
-            break;
-        }
-
-        return ESP_OK;
+        return server->dispatchDynamic(req);
     }
 
-    bool Server::registerHandler(HandlerEntry *entry)
-    {
-        if (!_handle || !entry)
-        {
-            return false;
-        }
-        entry->uriDef.user_ctx = entry;
-        const esp_err_t err = httpd_register_uri_handler(_handle, &entry->uriDef);
-        if (err != ESP_OK)
-        {
-            ESP_LOGE(TAG, "Failed to register %s: %s", entry->uriPattern.c_str(), esp_err_to_name(err));
-            return false;
-        }
-        entry->registered = true;
-        return true;
-    }
-
-    void Server::setupStaticInfoFromFS(HandlerEntry *entry, Request &req, Response &res)
+    void Server::setupStaticInfoFromFS(HandlerEntry *entry, Request &req, Response &res, const String &normalizedUri, const String &relPath)
     {
         if (!entry || !entry->fs)
         {
@@ -1123,24 +1120,16 @@ namespace EspHttpServer
             return;
         }
 
-        String uri = req.uri();
-        String rel;
-        if (!extractRelativePath(uri, entry->uriPrefix, rel))
-        {
-            httpd_resp_send_err(req.raw(), HTTPD_404_NOT_FOUND, "Not Found");
-            return;
-        }
-
         StaticInfo info;
-        info.uri = uri;
-        info.relPath = rel;
-        info.logicalPath = rel;
+        info.uri = normalizedUri;
+        info.relPath = relPath;
+        info.logicalPath = relPath;
 
-        const bool requestGz = rel.endsWith(".gz");
-        String relBase = rel;
+        const bool requestGz = relPath.endsWith(".gz");
+        String relBase = relPath;
         if (requestGz)
         {
-            relBase = rel.substring(0, rel.length() - 3);
+            relBase = relPath.substring(0, relPath.length() - 3);
             if (relBase.isEmpty())
             {
                 relBase = "/";
@@ -1202,6 +1191,10 @@ namespace EspHttpServer
             info.logicalPath = info.logicalPath.substring(0, info.logicalPath.length() - 3);
         }
 
+#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
+        ESP_LOGD(TAG, "[STATIC][FS] path=%s gz=%d exists=%d", info.fsPath.c_str(), info.isGzipped, info.exists);
+#endif
+
         res.setStaticFileSystem(entry->fs);
         res.setStaticInfo(info);
 
@@ -1211,26 +1204,18 @@ namespace EspHttpServer
         }
     }
 
-    void Server::setupStaticInfoFromMemory(HandlerEntry *entry, Request &req, Response &res)
+    void Server::setupStaticInfoFromMemory(HandlerEntry *entry, Request &req, Response &res, const String &normalizedUri, const String &relPath)
     {
-        String uri = req.uri();
-        String rel;
-        if (!extractRelativePath(uri, entry->uriPrefix, rel))
-        {
-            httpd_resp_send_err(req.raw(), HTTPD_404_NOT_FOUND, "Not Found");
-            return;
-        }
-
         StaticInfo info;
-        info.uri = uri;
-        info.relPath = rel;
-        info.logicalPath = rel;
+        info.uri = normalizedUri;
+        info.relPath = relPath;
+        info.logicalPath = relPath;
 
-        const bool requestGz = rel.endsWith(".gz");
-        String relBase = rel;
+        const bool requestGz = relPath.endsWith(".gz");
+        String relBase = relPath;
         if (requestGz)
         {
-            relBase = rel.substring(0, rel.length() - 3);
+            relBase = relPath.substring(0, relPath.length() - 3);
             if (relBase.isEmpty())
             {
                 relBase = "/";
@@ -1299,10 +1284,402 @@ namespace EspHttpServer
             res.clearStaticSource();
         }
 
+#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
+        ESP_LOGD(TAG, "[STATIC][MEM] path=%s gz=%d exists=%d", info.fsPath.c_str(), info.isGzipped, info.exists);
+#endif
+
         if (entry->staticHandler)
         {
             entry->staticHandler(info, req, res);
         }
+    }
+
+    bool Server::ensureMethodHook(httpd_method_t method)
+    {
+        for (auto &hook : _methodHooks)
+        {
+            if (hook->method == method)
+            {
+                return true;
+            }
+        }
+
+        auto hook = std::make_unique<MethodHook>();
+        hook->method = method;
+        hook->uriDef.uri = "/*";
+        hook->uriDef.method = method;
+        hook->uriDef.handler = &Server::handleDynamicHttpRequest;
+        hook->uriDef.user_ctx = this;
+        MethodHook *hookPtr = hook.get();
+        _methodHooks.push_back(std::move(hook));
+        if (_handle)
+        {
+            return registerMethodHook(hookPtr);
+        }
+        return true;
+    }
+
+    bool Server::registerMethodHook(MethodHook *hook)
+    {
+        if (!_handle || !hook)
+        {
+            return false;
+        }
+        hook->uriDef.user_ctx = this;
+        const esp_err_t err = httpd_register_uri_handler(_handle, &hook->uriDef);
+        if (err != ESP_OK)
+        {
+            ESP_LOGE(TAG, "Failed to register dynamic hook: %s", esp_err_to_name(err));
+            return false;
+        }
+        hook->registered = true;
+        return true;
+    }
+
+    esp_err_t Server::dispatchDynamic(httpd_req_t *req)
+    {
+        Request request(req);
+        Response response(req);
+
+        const String rawUri = request.uri();
+        ESP_LOGI(TAG, "[REQ] %s %s", request.method().c_str(), rawUri.c_str());
+
+        String normalized;
+        std::vector<String> pathSegments;
+        if (!normalizeRoutePath(rawUri, normalized, pathSegments))
+        {
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid path");
+            return ESP_OK;
+        }
+
+        std::vector<std::pair<String, String>> emptyParams;
+        request.setPathInfo(normalized, emptyParams);
+
+        httpd_method_t method = static_cast<httpd_method_t>(req->method);
+        if (method == HTTP_GET)
+        {
+            if (tryHandleStaticRequest(request, response, method, rawUri, normalized))
+            {
+                return ESP_OK;
+            }
+        }
+
+        DynamicRoute *bestRoute = nullptr;
+        int bestScore = -1;
+        std::vector<std::pair<String, String>> bestParams;
+        std::vector<std::pair<String, String>> tempParams;
+
+        for (auto &route : _dynamicRoutes)
+        {
+            if (route.method != method)
+            {
+                continue;
+            }
+            tempParams.clear();
+            if (matchRoute(route, pathSegments, tempParams))
+            {
+                if (route.score > bestScore)
+                {
+                    bestScore = route.score;
+                    bestRoute = &route;
+                    bestParams = tempParams;
+                }
+            }
+        }
+
+        if (!bestRoute)
+        {
+            httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "Not Found");
+            return ESP_OK;
+        }
+
+        request.setPathInfo(normalized, bestParams);
+        ESP_LOGI(TAG, "[ROUTE] %s -> %s", normalized.c_str(), bestRoute->pattern.c_str());
+#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
+        if (!bestParams.empty())
+        {
+            String buffer;
+            for (const auto &kv : bestParams)
+            {
+                if (!buffer.isEmpty())
+                {
+                    buffer += ", ";
+                }
+                buffer += kv.first;
+                buffer += "=";
+                buffer += kv.second;
+            }
+            ESP_LOGD(TAG, "[PARAMS] %s", buffer.c_str());
+        }
+#endif
+        bestRoute->handler(request, response);
+        return ESP_OK;
+    }
+
+    bool Server::tryHandleStaticRequest(Request &req, Response &res, httpd_method_t method, const String &rawPath, const String &normalizedPath)
+    {
+        if (method != HTTP_GET)
+        {
+            return false;
+        }
+        std::vector<std::pair<String, String>> emptyParams;
+        for (auto &entryPtr : _handlers)
+        {
+            HandlerEntry *entry = entryPtr.get();
+            if (!entry)
+            {
+                continue;
+            }
+            String relRaw;
+            if (!extractRelativePath(rawPath, entry->uriPrefix, relRaw))
+            {
+                continue;
+            }
+            String relNormalized;
+            if (!extractRelativePath(normalizedPath, entry->uriPrefix, relNormalized))
+            {
+                relNormalized = relRaw;
+            }
+            req.setPathInfo(normalizedPath, emptyParams);
+            switch (entry->type)
+            {
+            case HandlerType::StaticFS:
+                ESP_LOGI(TAG, "[STATIC][FS] %s (rel=%s)", rawPath.c_str(), relRaw.c_str());
+                setupStaticInfoFromFS(entry, req, res, normalizedPath, relNormalized);
+                return true;
+            case HandlerType::StaticMem:
+                ESP_LOGI(TAG, "[STATIC][MEM] %s (rel=%s)", rawPath.c_str(), relRaw.c_str());
+                setupStaticInfoFromMemory(entry, req, res, normalizedPath, relNormalized);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool Server::parseRoutePattern(const String &pattern, std::vector<RouteSegment> &segments, int &score)
+    {
+        segments.clear();
+        score = 0;
+
+        String working = pattern;
+        int q = working.indexOf('?');
+        if (q >= 0)
+        {
+            working = working.substring(0, q);
+        }
+        if (working.isEmpty())
+        {
+            working = "/";
+        }
+        if (!working.startsWith("/"))
+        {
+            working = "/" + working;
+        }
+
+        std::vector<String> rawSegments;
+        String current;
+        for (size_t i = 0; i < working.length(); ++i)
+        {
+            const char c = working.charAt(i);
+            if (c == '/')
+            {
+                if (!current.isEmpty())
+                {
+                    rawSegments.push_back(current);
+                    current.clear();
+                }
+                continue;
+            }
+            current += c;
+        }
+        if (!current.isEmpty())
+        {
+            rawSegments.push_back(current);
+        }
+
+        bool wildcardSeen = false;
+        for (size_t i = 0; i < rawSegments.size(); ++i)
+        {
+            const String &token = rawSegments[i];
+            RouteSegment segment;
+            if (token.startsWith("*"))
+            {
+                if (wildcardSeen || i != rawSegments.size() - 1)
+                {
+                    return false;
+                }
+                String name = token.substring(1);
+                if (name.isEmpty())
+                {
+                    return false;
+                }
+                segment.type = RouteSegment::Type::Wildcard;
+                segment.value = name;
+                wildcardSeen = true;
+                score += 1;
+            }
+            else if (token.startsWith(":"))
+            {
+                String name = token.substring(1);
+                if (name.isEmpty())
+                {
+                    return false;
+                }
+                segment.type = RouteSegment::Type::Param;
+                segment.value = name;
+                score += 2;
+            }
+            else
+            {
+                segment.type = RouteSegment::Type::Literal;
+                segment.value = token;
+                score += 3;
+            }
+            segments.push_back(segment);
+        }
+
+        return true;
+    }
+
+    bool Server::normalizeRoutePath(const String &raw, String &normalized, std::vector<String> &segments) const
+    {
+        String working = raw;
+        int q = working.indexOf('?');
+        if (q >= 0)
+        {
+            working = working.substring(0, q);
+        }
+        if (working.isEmpty())
+        {
+            working = "/";
+        }
+        if (!working.startsWith("/"))
+        {
+            working = "/" + working;
+        }
+        String decoded = urlDecode(working);
+        segments.clear();
+        String current;
+        for (size_t i = 0; i < decoded.length(); ++i)
+        {
+            char c = decoded.charAt(i);
+            if (c == '/')
+            {
+                if (!current.isEmpty())
+                {
+                    segments.push_back(current);
+                    current.clear();
+                }
+                continue;
+            }
+            current += c;
+        }
+        if (!current.isEmpty())
+        {
+            segments.push_back(current);
+        }
+
+        normalized = "/";
+        for (size_t i = 0; i < segments.size(); ++i)
+        {
+            normalized += segments[i];
+            if (i + 1 < segments.size())
+            {
+                normalized += "/";
+            }
+        }
+        return true;
+    }
+
+    bool Server::matchRoute(const DynamicRoute &route, const std::vector<String> &pathSegments, std::vector<std::pair<String, String>> &outParams) const
+    {
+        outParams.clear();
+        size_t pathIndex = 0;
+        for (size_t i = 0; i < route.segments.size(); ++i)
+        {
+            const auto &segment = route.segments[i];
+            switch (segment.type)
+            {
+            case RouteSegment::Type::Literal:
+                if (pathIndex >= pathSegments.size() || pathSegments[pathIndex] != segment.value)
+                {
+                    return false;
+                }
+                pathIndex++;
+                break;
+            case RouteSegment::Type::Param:
+                if (pathIndex >= pathSegments.size())
+                {
+                    return false;
+                }
+                outParams.push_back({segment.value, pathSegments[pathIndex]});
+                pathIndex++;
+                break;
+            case RouteSegment::Type::Wildcard:
+            {
+                String rest;
+                for (size_t j = pathIndex; j < pathSegments.size(); ++j)
+                {
+                    if (j > pathIndex)
+                    {
+                        rest += "/";
+                    }
+                    rest += pathSegments[j];
+                }
+                outParams.push_back({segment.value, rest});
+                pathIndex = pathSegments.size();
+                break;
+            }
+            }
+        }
+
+        if (pathIndex != pathSegments.size())
+        {
+            return false;
+        }
+        return true;
+    }
+
+    String Server::urlDecode(const String &input) const
+    {
+        auto hexToInt = [](char c) -> int
+        {
+            if (c >= '0' && c <= '9')
+                return c - '0';
+            if (c >= 'a' && c <= 'f')
+                return c - 'a' + 10;
+            if (c >= 'A' && c <= 'F')
+                return c - 'A' + 10;
+            return -1;
+        };
+
+        String out;
+        out.reserve(input.length());
+        for (size_t i = 0; i < input.length(); ++i)
+        {
+            char c = input.charAt(i);
+            if (c == '%')
+            {
+                if (i + 2 < input.length())
+                {
+                    int hi = hexToInt(input.charAt(i + 1));
+                    int lo = hexToInt(input.charAt(i + 2));
+                    if (hi >= 0 && lo >= 0)
+                    {
+                        out += static_cast<char>((hi << 4) | lo);
+                        i += 2;
+                        continue;
+                    }
+                }
+            }
+            else if (c == '+')
+            {
+                out += ' ';
+                continue;
+            }
+            out += c;
+        }
+        return out;
     }
 
 } // namespace EspHttpServer

@@ -67,6 +67,15 @@ server.serveStatic("/static", g_paths, g_data, g_sizes, g_fileCount,
 
 SPA 向けには `info.exists` を検査し、存在しない場合に `sendFile()` で `/app/index.html` などを返すことでフォールバックできます。
 
+### デバッグレベル
+
+Arduino IDE の **Core Debug Level**（または Arduino CLI の `--build-property build.code.debug=<level>`）設定に連動して `ESP_LOGx` の出力が決まります。デフォルトの `None` では `ESP_LOGE` さえ抑制されるため、開発時は少なくとも `Error` 以上に設定してください。
+
+- `None`（デフォルト）: すべてのログを非表示
+- `Error`: `ESP_LOGE` による致命的エラーのみ
+- `Info`: リクエストラインや静的ルートの解決を表示
+- `Debug`: パスパラメータや静的ファイル解決の詳細も出力
+
 ## サンプルスケッチ
 
 - **BasicDynamic** – 動的テキストレスポンスの最小例。
@@ -74,6 +83,7 @@ SPA 向けには `info.exists` を検査し、存在しない場合に `sendFile
 - **TemplateHead** – テンプレートと head injection の併用例。
 - **StaticFS** – `examples/StaticFS/data` の内容を LittleFS へ転送して配信。
 - **EmbeddedAssetsSimple** – `examples/EmbeddedAssetsSimple/assets_www` を Arduino CLI Wrapper でヘッダー化し、`/embed` からフラッシュ上のファイルを配信。
+- **PathParams** – `req.pathParam()` で `:id` や `*path` を扱うルーティングのサンプル。
 
 ## VS Code ワークフロー
 

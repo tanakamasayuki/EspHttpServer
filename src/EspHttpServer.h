@@ -5,6 +5,7 @@
 #include <functional>
 #include <memory>
 #include <vector>
+#include <utility>
 
 extern "C"
 {
@@ -48,9 +49,19 @@ namespace EspHttpServer
         httpd_req_t *raw() const { return _raw; }
         String uri() const;
         String method() const;
+        const String &path() const { return _normalizedPath; }
+        String pathParam(const String &key) const;
+        bool hasPathParam(const String &key) const;
 
     private:
+        friend class Server;
+
+        void setPathInfo(const String &path, const std::vector<std::pair<String, String>> &params);
+        void clearPathInfo();
+
         httpd_req_t *_raw = nullptr;
+        String _normalizedPath = "/";
+        std::vector<std::pair<String, String>> _pathParams;
     };
 
     // en: Response facade implementing the high-level API from SPEC.md.
@@ -101,6 +112,7 @@ namespace EspHttpServer
         void setStaticMemorySource(const uint8_t *data, size_t size);
         void clearStaticSource();
         bool streamHtmlFromSource(StaticInputStream &stream);
+        const char *statusString(int code);
 
         httpd_req_t *_raw = nullptr;
         TemplateHandler _templateHandler;
@@ -113,6 +125,7 @@ namespace EspHttpServer
         fs::FS *_staticFs = nullptr;
         const uint8_t *_memData = nullptr;
         size_t _memSize = 0;
+        char _statusBuffer[16] = {0};
     };
 
     // en: Minimal server wrapper coordinating route and static registrations.
@@ -143,21 +156,16 @@ namespace EspHttpServer
     private:
         enum class HandlerType
         {
-            Dynamic,
             StaticFS,
             StaticMem
         };
 
         struct HandlerEntry
         {
-            HandlerType type = HandlerType::Dynamic;
-            RouteHandler routeHandler;
+            HandlerType type = HandlerType::StaticFS;
             StaticHandler staticHandler;
-            String uriPattern;
             String uriPrefix;
             String basePath;
-            httpd_uri_t uriDef{};
-            bool registered = false;
             fs::FS *fs = nullptr;
             const char *const *memPaths = nullptr;
             const uint8_t *const *memData = nullptr;
@@ -166,13 +174,51 @@ namespace EspHttpServer
             Server *owner = nullptr;
         };
 
-        static esp_err_t handleHttpRequest(httpd_req_t *req);
-        bool registerHandler(HandlerEntry *entry);
-        void setupStaticInfoFromFS(HandlerEntry *entry, Request &req, Response &res);
-        void setupStaticInfoFromMemory(HandlerEntry *entry, Request &req, Response &res);
+        struct RouteSegment
+        {
+            enum class Type
+            {
+                Literal,
+                Param,
+                Wildcard
+            };
+
+            Type type = Type::Literal;
+            String value;
+        };
+
+        struct DynamicRoute
+        {
+            httpd_method_t method = HTTP_GET;
+            String pattern;
+            std::vector<RouteSegment> segments;
+            int score = 0;
+            RouteHandler handler;
+        };
+
+        struct MethodHook
+        {
+            httpd_method_t method = HTTP_GET;
+            httpd_uri_t uriDef{};
+            bool registered = false;
+        };
+
+        static esp_err_t handleDynamicHttpRequest(httpd_req_t *req);
+        void setupStaticInfoFromFS(HandlerEntry *entry, Request &req, Response &res, const String &normalizedUri, const String &relPath);
+        void setupStaticInfoFromMemory(HandlerEntry *entry, Request &req, Response &res, const String &normalizedUri, const String &relPath);
+        bool ensureMethodHook(httpd_method_t method);
+        bool registerMethodHook(MethodHook *hook);
+        esp_err_t dispatchDynamic(httpd_req_t *req);
+        bool tryHandleStaticRequest(Request &req, Response &res, httpd_method_t method, const String &rawPath, const String &normalizedPath);
+        bool parseRoutePattern(const String &pattern, std::vector<RouteSegment> &segments, int &score);
+        bool normalizeRoutePath(const String &raw, String &normalized, std::vector<String> &segments) const;
+        bool matchRoute(const DynamicRoute &route, const std::vector<String> &pathSegments, std::vector<std::pair<String, String>> &outParams) const;
+        String urlDecode(const String &input) const;
 
         httpd_handle_t _handle = nullptr;
         std::vector<std::unique_ptr<HandlerEntry>> _handlers;
+        std::vector<DynamicRoute> _dynamicRoutes;
+        std::vector<std::unique_ptr<MethodHook>> _methodHooks;
     };
 
 } // namespace EspHttpServer
