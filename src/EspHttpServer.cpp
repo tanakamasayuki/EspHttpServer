@@ -1324,6 +1324,8 @@ namespace EspHttpServer
         ESP_LOGD(TAG, "[STATIC][MEM] path=%s gz=%d exists=%d", info.fsPath.c_str(), info.isGzipped, info.exists);
 #endif
 
+        res.setStaticInfo(info);
+
         if (entry->staticHandler)
         {
             entry->staticHandler(info, req, res);
