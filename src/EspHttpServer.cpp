@@ -1005,6 +1005,190 @@ namespace EspHttpServer
         return true;
     }
 
+#if LOG_LOCAL_LEVEL >= ESP_LOG_INFO
+        String normalizeBasePathForLog(const String &input)
+        {
+            String normalized = input;
+            if (normalized.isEmpty())
+            {
+                normalized = "/";
+            }
+            while (normalized.length() > 1 && normalized.endsWith("/"))
+            {
+                normalized.remove(normalized.length() - 1);
+            }
+            if (!normalized.startsWith("/"))
+            {
+                normalized = "/" + normalized;
+            }
+            return normalized;
+        }
+
+        String relativePathForLog(const String &normalizedBase, const String &fullPath)
+        {
+            if (fullPath.isEmpty())
+            {
+                return String("/");
+            }
+            String relative = fullPath;
+            if (normalizedBase != "/")
+            {
+                if (relative.startsWith(normalizedBase))
+                {
+                    relative = relative.substring(normalizedBase.length());
+                }
+                else
+                {
+                    String baseNoSlash = normalizedBase.substring(1);
+                    if (relative.startsWith(baseNoSlash))
+                    {
+                        relative = relative.substring(baseNoSlash.length());
+                    }
+                }
+            }
+            if (relative.startsWith("/"))
+            {
+                relative.remove(0, 1);
+            }
+            if (relative.isEmpty())
+            {
+                return String("/");
+            }
+            return relative;
+        }
+
+        String makeLogIndent(int depth)
+        {
+            String indent;
+            if (depth <= 0)
+            {
+                return indent;
+            }
+            indent.reserve(depth * 2);
+            for (int i = 0; i < depth; ++i)
+            {
+                indent += "  ";
+            }
+            return indent;
+        }
+
+        String buildFullPath(const String &base, const String &entryName)
+        {
+            if (entryName.isEmpty())
+            {
+                return base;
+            }
+            if (entryName.startsWith("/"))
+            {
+                return entryName;
+            }
+            if (base == "/")
+            {
+                return String("/") + entryName;
+            }
+            String combined = base;
+            if (!combined.endsWith("/"))
+            {
+                combined += "/";
+            }
+            combined += entryName;
+            return combined;
+        }
+
+        void logFsDirectory(fs::FS &fs, const String &normalizedBase, const String &fsPath, int depth)
+        {
+            File dir = fs.open(fsPath);
+            if (!dir || !dir.isDirectory())
+            {
+                if (dir)
+                {
+                    dir.close();
+                }
+                return;
+            }
+
+            while (true)
+            {
+                File entry = dir.openNextFile();
+                if (!entry)
+                {
+                    break;
+                }
+                const char *rawName = entry.name();
+                String entryName = rawName ? String(rawName) : String();
+                String fullPath = buildFullPath(fsPath, entryName);
+                if (fullPath.isEmpty())
+                {
+                    fullPath = fsPath;
+                }
+                String relative = relativePathForLog(normalizedBase, fullPath);
+                String indent = makeLogIndent(depth);
+                if (entry.isDirectory())
+                {
+                    ESP_LOGI(TAG, "  %s%s/ [%s]", indent.c_str(), relative.c_str(), fullPath.c_str());
+                    entry.close();
+                    logFsDirectory(fs, normalizedBase, fullPath, depth + 1);
+                }
+                else
+                {
+                    size_t size = entry.size();
+                    bool gz = fullPath.endsWith(".gz");
+                    ESP_LOGI(TAG, "  %s%s (%u bytes)%s [%s]",
+                             indent.c_str(),
+                             relative.c_str(),
+                             static_cast<unsigned>(size),
+                             gz ? " gz" : "",
+                             fullPath.c_str());
+                    entry.close();
+                }
+            }
+
+            dir.close();
+        }
+
+        void logFileSystemListing(fs::FS &fs, const String &basePath)
+        {
+            String openPath = basePath;
+            if (openPath.isEmpty())
+            {
+                openPath = "/";
+            }
+            File root = fs.open(openPath);
+            if (!root && !openPath.startsWith("/"))
+            {
+                String alt = "/" + openPath;
+                root = fs.open(alt);
+                if (root)
+                {
+                    openPath = alt;
+                }
+            }
+            if (!root)
+            {
+                ESP_LOGW(TAG, "[SERVE][FS] unable to list %s", basePath.c_str());
+                return;
+            }
+
+            String normalizedBase = normalizeBasePathForLog(openPath);
+            if (!root.isDirectory())
+            {
+                size_t size = root.size();
+                bool gz = normalizedBase.endsWith(".gz");
+                ESP_LOGI(TAG, "[SERVE][FS] %s (%u bytes)%s [%s]",
+                         normalizedBase.c_str(),
+                         static_cast<unsigned>(size),
+                         gz ? " gz" : "",
+                         normalizedBase.c_str());
+                root.close();
+                return;
+            }
+
+            ESP_LOGI(TAG, "[SERVE][FS] listing %s", normalizedBase.c_str());
+            root.close();
+            logFsDirectory(fs, normalizedBase, normalizedBase, 0);
+        }
+#endif
+
     void Server::end()
     {
         if (_handle)
@@ -1073,6 +1257,11 @@ namespace EspHttpServer
         entry->basePath = basePath;
         entry->fs = &fs;
         entry->owner = this;
+
+#if LOG_LOCAL_LEVEL >= ESP_LOG_INFO
+        ESP_LOGI(TAG, "[SERVE][FS] %s -> %s", entry->uriPrefix.c_str(), entry->basePath.c_str());
+        logFileSystemListing(fs, basePath);
+#endif
 
         _handlers.push_back(std::move(entry));
         ensureMethodHook(HTTP_GET);
