@@ -87,6 +87,19 @@ namespace EspHttpServer
         void setStaticInfo(const StaticInfo &info);
 
     private:
+        friend class Server;
+
+        enum class StaticSourceType
+        {
+            None,
+            FileSystem,
+            Memory
+        };
+
+        void setStaticFileSystem(fs::FS *fs);
+        void setStaticMemorySource(const uint8_t *data, size_t size);
+        void clearStaticSource();
+
         httpd_req_t *_raw = nullptr;
         TemplateHandler _templateHandler;
         String _headInjection;
@@ -94,6 +107,10 @@ namespace EspHttpServer
         bool _headInjectionIsRawPtr = false;
         StaticInfo _staticInfo;
         bool _chunked = false;
+        StaticSourceType _staticSource = StaticSourceType::None;
+        fs::FS *_staticFs = nullptr;
+        const uint8_t *_memData = nullptr;
+        size_t _memSize = 0;
     };
 
     // en: Minimal server wrapper coordinating route and static registrations.
@@ -122,15 +139,38 @@ namespace EspHttpServer
                          StaticHandler handler);
 
     private:
-        struct HandlerEntry
+        enum class HandlerType
         {
-            String uri;
-            httpd_method_t method;
-            RouteHandler handler;
+            Dynamic,
+            StaticFS,
+            StaticMem
         };
 
+        struct HandlerEntry
+        {
+            HandlerType type = HandlerType::Dynamic;
+            RouteHandler routeHandler;
+            StaticHandler staticHandler;
+            String uriPattern;
+            String uriPrefix;
+            String basePath;
+            httpd_uri_t uriDef{};
+            bool registered = false;
+            fs::FS *fs = nullptr;
+            const char *const *memPaths = nullptr;
+            const uint8_t *const *memData = nullptr;
+            const size_t *memSizes = nullptr;
+            size_t memCount = 0;
+            Server *owner = nullptr;
+        };
+
+        static esp_err_t handleHttpRequest(httpd_req_t *req);
+        bool registerHandler(HandlerEntry *entry);
+        void setupStaticInfoFromFS(HandlerEntry *entry, Request &req, Response &res);
+        void setupStaticInfoFromMemory(HandlerEntry *entry, Request &req, Response &res);
+
         httpd_handle_t _handle = nullptr;
-        std::vector<HandlerEntry> _handlers;
+        std::vector<std::unique_ptr<HandlerEntry>> _handlers;
     };
 
 } // namespace EspHttpServer
