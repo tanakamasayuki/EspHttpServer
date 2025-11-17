@@ -5,7 +5,7 @@
 #include <algorithm>
 #include <cctype>
 #include <lwip/sockets.h>
-#include <lwip/inet.h>
+#include <lwip/ip4_addr.h>
 
 #ifdef CORE_DEBUG_LEVEL
 #undef LOG_LOCAL_LEVEL
@@ -1720,27 +1720,15 @@ namespace EspHttpServer
         {
             return String("-");
         }
-        sockaddr_storage addr;
+        sockaddr_in addr;
         socklen_t len = sizeof(addr);
-        if (getpeername(sock, reinterpret_cast<sockaddr *>(&addr), &len) != 0)
+        memset(&addr, 0, sizeof(addr));
+        if (getpeername(sock, reinterpret_cast<sockaddr *>(&addr), &len) != 0 || addr.sin_family != AF_INET)
         {
             return String("-");
         }
-        char buffer[INET6_ADDRSTRLEN] = {0};
-        if (addr.ss_family == AF_INET)
-        {
-            const auto *in = reinterpret_cast<const sockaddr_in *>(&addr);
-            inet_ntop(AF_INET, &in->sin_addr, buffer, sizeof(buffer));
-        }
-        else if (addr.ss_family == AF_INET6)
-        {
-            const auto *in6 = reinterpret_cast<const sockaddr_in6 *>(&addr);
-            inet_ntop(AF_INET6, &in6->sin6_addr, buffer, sizeof(buffer));
-        }
-        else
-        {
-            return String("-");
-        }
+        char buffer[IP4ADDR_STRLEN_MAX] = {0};
+        ip4addr_ntoa_r(reinterpret_cast<const ip4_addr_t *>(&addr.sin_addr), buffer, sizeof(buffer));
         return String(buffer);
     }
 #else
