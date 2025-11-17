@@ -4,6 +4,8 @@
 #include <cstring>
 #include <algorithm>
 #include <cctype>
+#include <lwip/sockets.h>
+#include <lwip/inet.h>
 
 #ifdef CORE_DEBUG_LEVEL
 #undef LOG_LOCAL_LEVEL
@@ -1342,7 +1344,12 @@ namespace EspHttpServer
         Response response(req);
 
         const String rawUri = request.uri();
-        ESP_LOGI(TAG, "[REQ] %s %s", request.method().c_str(), rawUri.c_str());
+#if LOG_LOCAL_LEVEL >= ESP_LOG_INFO
+        {
+            const String remote = clientAddress(req);
+            ESP_LOGI(TAG, "[REQ] %s %s from %s", request.method().c_str(), rawUri.c_str(), remote.c_str());
+        }
+#endif
 
         String normalized;
         std::vector<String> pathSegments;
@@ -1394,22 +1401,14 @@ namespace EspHttpServer
         }
 
         request.setPathInfo(normalized, bestParams);
-        ESP_LOGI(TAG, "[ROUTE] %s -> %s", normalized.c_str(), bestRoute->pattern.c_str());
-#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
-        if (!bestParams.empty())
+#if LOG_LOCAL_LEVEL >= ESP_LOG_INFO
         {
-            String buffer;
-            for (const auto &kv : bestParams)
-            {
-                if (!buffer.isEmpty())
-                {
-                    buffer += ", ";
-                }
-                buffer += kv.first;
-                buffer += "=";
-                buffer += kv.second;
-            }
-            ESP_LOGD(TAG, "[PARAMS] %s", buffer.c_str());
+            ESP_LOGI(TAG, "[ROUTE] %s -> %s", normalized.c_str(), bestRoute->pattern.c_str());
+        }
+#endif
+#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
+        {
+            logParams(bestParams);
         }
 #endif
         bestRoute->handler(request, response);
@@ -1444,11 +1443,15 @@ namespace EspHttpServer
             switch (entry->type)
             {
             case HandlerType::StaticFS:
+#if LOG_LOCAL_LEVEL >= ESP_LOG_INFO
                 ESP_LOGI(TAG, "[STATIC][FS] %s (rel=%s)", rawPath.c_str(), relRaw.c_str());
+#endif
                 setupStaticInfoFromFS(entry, req, res, normalizedPath, relNormalized);
                 return true;
             case HandlerType::StaticMem:
+#if LOG_LOCAL_LEVEL >= ESP_LOG_INFO
                 ESP_LOGI(TAG, "[STATIC][MEM] %s (rel=%s)", rawPath.c_str(), relRaw.c_str());
+#endif
                 setupStaticInfoFromMemory(entry, req, res, normalizedPath, relNormalized);
                 return true;
             }
@@ -1681,5 +1684,71 @@ namespace EspHttpServer
         }
         return out;
     }
+
+#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
+    void Server::logParams(const std::vector<std::pair<String, String>> &params) const
+    {
+        if (params.empty())
+        {
+            return;
+        }
+        String buffer;
+        for (const auto &kv : params)
+        {
+            if (!buffer.isEmpty())
+            {
+                buffer += ", ";
+            }
+            buffer += kv.first;
+            buffer += "=";
+            buffer += kv.second;
+        }
+        ESP_LOGD(TAG, "[PARAMS] %s", buffer.c_str());
+    }
+#else
+    void Server::logParams(const std::vector<std::pair<String, String>> &params) const
+    {
+        (void)params;
+    }
+#endif
+
+#if LOG_LOCAL_LEVEL >= ESP_LOG_INFO
+    String Server::clientAddress(httpd_req_t *req) const
+    {
+        int sock = httpd_req_to_sockfd(req);
+        if (sock < 0)
+        {
+            return String("-");
+        }
+        sockaddr_storage addr;
+        socklen_t len = sizeof(addr);
+        if (getpeername(sock, reinterpret_cast<sockaddr *>(&addr), &len) != 0)
+        {
+            return String("-");
+        }
+        char buffer[INET6_ADDRSTRLEN] = {0};
+        if (addr.ss_family == AF_INET)
+        {
+            const auto *in = reinterpret_cast<const sockaddr_in *>(&addr);
+            inet_ntop(AF_INET, &in->sin_addr, buffer, sizeof(buffer));
+        }
+        else if (addr.ss_family == AF_INET6)
+        {
+            const auto *in6 = reinterpret_cast<const sockaddr_in6 *>(&addr);
+            inet_ntop(AF_INET6, &in6->sin6_addr, buffer, sizeof(buffer));
+        }
+        else
+        {
+            return String("-");
+        }
+        return String(buffer);
+    }
+#else
+    String Server::clientAddress(httpd_req_t *req) const
+    {
+        (void)req;
+        return String("-");
+    }
+#endif
 
 } // namespace EspHttpServer

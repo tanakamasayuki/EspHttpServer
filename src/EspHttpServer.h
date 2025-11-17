@@ -214,6 +214,8 @@ namespace EspHttpServer
         bool normalizeRoutePath(const String &raw, String &normalized, std::vector<String> &segments) const;
         bool matchRoute(const DynamicRoute &route, const std::vector<String> &pathSegments, std::vector<std::pair<String, String>> &outParams) const;
         String urlDecode(const String &input) const;
+        void logParams(const std::vector<std::pair<String, String>> &params) const;
+        String clientAddress(httpd_req_t *req) const;
 
         httpd_handle_t _handle = nullptr;
         std::vector<std::unique_ptr<HandlerEntry>> _handlers;
