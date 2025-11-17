@@ -3,6 +3,7 @@
 #include <esp_log.h>
 #include <cstring>
 #include <algorithm>
+#include <cctype>
 
 namespace EspHttpServer
 {
@@ -140,86 +141,6 @@ namespace EspHttpServer
             return mime.equalsIgnoreCase("text/html");
         }
 
-        String injectHeadSnippet(const String &html, const char *snippet)
-        {
-            if (!snippet || !snippet[0])
-            {
-                return html;
-            }
-            String lower = html;
-            lower.toLowerCase();
-            int headPos = lower.indexOf("<head");
-            if (headPos < 0)
-            {
-                return html;
-            }
-            int closePos = lower.indexOf('>', headPos);
-            if (closePos < 0)
-            {
-                return html;
-            }
-            const int insertPos = closePos + 1;
-            String out;
-            out.reserve(html.length() + strlen(snippet));
-            out += html.substring(0, insertPos);
-            out += snippet;
-            out += html.substring(insertPos);
-            return out;
-        }
-
-        String renderTemplate(const String &input, TemplateHandler handler)
-        {
-            if (!handler)
-            {
-                return input;
-            }
-
-            String out;
-            out.reserve(input.length());
-
-            size_t i = 0;
-            while (i < static_cast<size_t>(input.length()))
-            {
-                if (input.charAt(i) == '{' && i + 1 < static_cast<size_t>(input.length()) && input.charAt(i + 1) == '{')
-                {
-                    const bool triple = (i + 2 < static_cast<size_t>(input.length()) && input.charAt(i + 2) == '{');
-                    const size_t openLen = triple ? 3 : 2;
-                    const String closeToken = triple ? String("}}}") : String("}}");
-                    const int closeIdx = input.indexOf(closeToken, i + openLen);
-                    if (closeIdx < 0)
-                    {
-                        out += input.substring(i);
-                        break;
-                    }
-                    const String keyRaw = input.substring(i + openLen, closeIdx);
-                    String key = keyRaw;
-                    key.trim();
-                    bool handled = false;
-                    String replacement;
-                    if (!key.isEmpty())
-                    {
-                        StringBuilderPrint printer(replacement);
-                        handled = handler(key, printer);
-                    }
-                    if (handled)
-                    {
-                        out += triple ? replacement : htmlEscape(replacement);
-                    }
-                    else
-                    {
-                        out += input.substring(i, closeIdx + closeToken.length());
-                    }
-                    i = closeIdx + closeToken.length();
-                }
-                else
-                {
-                    out += input.charAt(i);
-                    ++i;
-                }
-            }
-            return out;
-        }
-
         bool streamFileToClient(httpd_req_t *raw, fs::FS *fs, const String &path)
         {
             if (!fs)
@@ -281,42 +202,6 @@ namespace EspHttpServer
             return true;
         }
 
-        String readFileToString(fs::FS *fs, const String &path)
-        {
-            if (!fs)
-            {
-                return String();
-            }
-            File file = fs->open(path, "r");
-            if (!file)
-            {
-                return String();
-            }
-            String out;
-            out.reserve(file.size());
-            while (file.available())
-            {
-                out += static_cast<char>(file.read());
-            }
-            file.close();
-            return out;
-        }
-
-        String readMemoryToString(const uint8_t *data, size_t size)
-        {
-            if (!data || size == 0)
-            {
-                return String();
-            }
-            String out;
-            out.reserve(size);
-            for (size_t i = 0; i < size; ++i)
-            {
-                out += static_cast<char>(data[i]);
-            }
-            return out;
-        }
-
         String ensureLeadingSlash(const String &path)
         {
             if (path.startsWith("/"))
@@ -371,6 +256,89 @@ namespace EspHttpServer
         }
 
     } // namespace
+
+    class StaticInputStream
+    {
+    public:
+        StaticInputStream(fs::FS *fs, const String &path)
+            : _fs(fs), _useFs(true)
+        {
+            if (_fs)
+            {
+                _file = _fs->open(path, "r");
+            }
+        }
+
+        StaticInputStream(const uint8_t *data, size_t size)
+            : _data(data), _size(size), _useFs(false)
+        {
+        }
+
+        ~StaticInputStream()
+        {
+            if (_file)
+            {
+                _file.close();
+            }
+        }
+
+        bool valid() const
+        {
+            if (_useFs)
+            {
+                return static_cast<bool>(_file);
+            }
+            return (_data != nullptr) || (_size == 0);
+        }
+
+        bool readChar(char &out)
+        {
+            if (_useFs)
+            {
+                if (!_file)
+                {
+                    return false;
+                }
+                if (_bufPos >= _bufLen)
+                {
+                    _bufLen = _file.read(_buffer, sizeof(_buffer));
+                    _bufPos = 0;
+                    if (_bufLen == 0)
+                    {
+                        return false;
+                    }
+                }
+                out = static_cast<char>(_buffer[_bufPos++]);
+                return true;
+            }
+
+            if (_pos >= _size)
+            {
+                return false;
+            }
+            if (_data)
+            {
+                out = static_cast<char>(_data[_pos]);
+            }
+            else
+            {
+                out = 0;
+            }
+            ++_pos;
+            return true;
+        }
+
+    private:
+        fs::FS *_fs = nullptr;
+        bool _useFs = false;
+        File _file;
+        const uint8_t *_data = nullptr;
+        size_t _size = 0;
+        size_t _pos = 0;
+        uint8_t _buffer[256];
+        size_t _bufLen = 0;
+        size_t _bufPos = 0;
+    };
 
     // -------- Request --------
 
@@ -532,7 +500,8 @@ namespace EspHttpServer
             httpd_resp_set_hdr(_raw, "Content-Encoding", "gzip");
         }
 
-        if (!htmlEligible || (!_templateHandler && (!_headInjectionPtr || !_headInjectionPtr[0])))
+        const bool needsProcessing = htmlEligible && (_templateHandler || (_headInjectionPtr && _headInjectionPtr[0]));
+        if (!needsProcessing)
         {
             bool ok = false;
             if (_staticSource == StaticSourceType::FileSystem)
@@ -550,25 +519,21 @@ namespace EspHttpServer
             return;
         }
 
-        String body;
+        bool ok = false;
         if (_staticSource == StaticSourceType::FileSystem)
         {
-            body = readFileToString(_staticFs, _staticInfo.fsPath);
+            StaticInputStream stream(_staticFs, _staticInfo.fsPath);
+            ok = streamHtmlFromSource(stream);
         }
         else
         {
-            body = readMemoryToString(_memData, _memSize);
+            StaticInputStream stream(_memData, _memSize);
+            ok = streamHtmlFromSource(stream);
         }
-
-        if (body.isEmpty())
+        if (!ok)
         {
             httpd_resp_send_500(_raw);
-            return;
         }
-
-        body = renderTemplate(body, _templateHandler);
-        body = injectHeadSnippet(body, _headInjectionPtr);
-        httpd_resp_send(_raw, body.c_str(), body.length());
     }
 
     void Response::sendFile(fs::FS &fs, const String &fsPath)
@@ -630,6 +595,338 @@ namespace EspHttpServer
         _staticFs = nullptr;
         _memData = nullptr;
         _memSize = 0;
+    }
+
+    bool Response::streamHtmlFromSource(StaticInputStream &stream)
+    {
+        if (!_raw || !stream.valid())
+        {
+            return false;
+        }
+
+        constexpr size_t kChunkLimit = 512;
+        String chunk;
+        chunk.reserve(kChunkLimit);
+
+        const bool templateActive = static_cast<bool>(_templateHandler);
+        const char *headSnippet = (_headInjectionPtr && _headInjectionPtr[0]) ? _headInjectionPtr : nullptr;
+        bool snippetInserted = (headSnippet == nullptr);
+        constexpr char kHeadToken[] = "<head";
+        constexpr int kHeadTokenLen = sizeof(kHeadToken) - 1;
+        int headMatchIdx = 0;
+        bool awaitingHeadBoundary = false;
+        bool waitingHeadClose = false;
+
+        auto flushChunk = [&]() -> bool
+        {
+            if (chunk.isEmpty())
+            {
+                return true;
+            }
+            if (httpd_resp_send_chunk(_raw, chunk.c_str(), chunk.length()) != ESP_OK)
+            {
+                return false;
+            }
+            chunk.clear();
+            return true;
+        };
+
+        auto appendRawChar = [&](char c) -> bool
+        {
+            chunk += c;
+            if (chunk.length() >= kChunkLimit)
+            {
+                return flushChunk();
+            }
+            return true;
+        };
+
+        auto appendRawString = [&](const char *text) -> bool
+        {
+            if (!text)
+            {
+                return true;
+            }
+            while (*text)
+            {
+                if (!appendRawChar(*text++))
+                {
+                    return false;
+                }
+            }
+            return true;
+        };
+
+        auto emitChar = [&](char c) -> bool
+        {
+            if (!snippetInserted)
+            {
+                const char lower = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+                if (!awaitingHeadBoundary && !waitingHeadClose)
+                {
+                    if (lower == kHeadToken[headMatchIdx])
+                    {
+                        headMatchIdx++;
+                        if (headMatchIdx == kHeadTokenLen)
+                        {
+                            awaitingHeadBoundary = true;
+                            headMatchIdx = 0;
+                        }
+                    }
+                    else
+                    {
+                        if (lower == kHeadToken[0])
+                        {
+                            headMatchIdx = 1;
+                        }
+                        else
+                        {
+                            headMatchIdx = 0;
+                        }
+                    }
+                }
+                else if (awaitingHeadBoundary)
+                {
+                    if (c == '>' || c == '/' || isspace(static_cast<unsigned char>(c)))
+                    {
+                        awaitingHeadBoundary = false;
+                        if (c == '>')
+                        {
+                            if (!appendRawChar(c))
+                            {
+                                return false;
+                            }
+                            if (headSnippet && headSnippet[0])
+                            {
+                                if (!appendRawString(headSnippet))
+                                {
+                                    return false;
+                                }
+                            }
+                            snippetInserted = true;
+                            return true;
+                        }
+                        waitingHeadClose = true;
+                    }
+                    else
+                    {
+                        awaitingHeadBoundary = false;
+                    }
+                }
+                else if (waitingHeadClose && c == '>')
+                {
+                    waitingHeadClose = false;
+                    if (!appendRawChar(c))
+                    {
+                        return false;
+                    }
+                    if (headSnippet && headSnippet[0])
+                    {
+                        if (!appendRawString(headSnippet))
+                        {
+                            return false;
+                        }
+                    }
+                    snippetInserted = true;
+                    return true;
+                }
+            }
+            return appendRawChar(c);
+        };
+
+        auto emitString = [&](const String &text) -> bool
+        {
+            for (size_t i = 0; i < text.length(); ++i)
+            {
+                if (!emitChar(text.charAt(i)))
+                {
+                    return false;
+                }
+            }
+            return true;
+        };
+
+        auto emitRepeat = [&](char c, int count) -> bool
+        {
+            for (int i = 0; i < count; ++i)
+            {
+                if (!emitChar(c))
+                {
+                    return false;
+                }
+            }
+            return true;
+        };
+
+        enum class TemplateState
+        {
+            Normal,
+            OpenBrace,
+            Placeholder
+        };
+
+        TemplateState state = TemplateState::Normal;
+        int braceCount = 0;
+        bool waitingThird = false;
+        bool triple = false;
+        int closingCount = 0;
+        String placeholderRaw;
+
+        char ch;
+        while (stream.readChar(ch))
+        {
+            bool reprocess = true;
+            while (reprocess)
+            {
+                reprocess = false;
+                switch (state)
+                {
+                case TemplateState::Normal:
+                    if (templateActive && ch == '{')
+                    {
+                        state = TemplateState::OpenBrace;
+                        braceCount = 1;
+                    }
+                    else
+                    {
+                        if (!emitChar(ch))
+                        {
+                            return false;
+                        }
+                    }
+                    break;
+                case TemplateState::OpenBrace:
+                    if (templateActive && ch == '{')
+                    {
+                        braceCount++;
+                        if (braceCount == 2)
+                        {
+                            state = TemplateState::Placeholder;
+                            placeholderRaw.clear();
+                            waitingThird = true;
+                            triple = false;
+                            closingCount = 0;
+                        }
+                    }
+                    else
+                    {
+                        if (!emitRepeat('{', braceCount))
+                        {
+                            return false;
+                        }
+                        braceCount = 0;
+                        state = TemplateState::Normal;
+                        reprocess = true;
+                    }
+                    break;
+                case TemplateState::Placeholder:
+                    if (waitingThird)
+                    {
+                        if (ch == '{')
+                        {
+                            triple = true;
+                            waitingThird = false;
+                            continue;
+                        }
+                        waitingThird = false;
+                        reprocess = true;
+                        continue;
+                    }
+                    if (ch == '}')
+                    {
+                        closingCount++;
+                        const int needed = triple ? 3 : 2;
+                        if (closingCount == needed)
+                        {
+                            String key = placeholderRaw;
+                            key.trim();
+                            bool handled = false;
+                            String replacement;
+                            if (_templateHandler && !key.isEmpty())
+                            {
+                                StringBuilderPrint printer(replacement);
+                                handled = _templateHandler(key, printer);
+                            }
+                            if (handled)
+                            {
+                                if (!triple)
+                                {
+                                    replacement = htmlEscape(replacement);
+                                }
+                                if (!emitString(replacement))
+                                {
+                                    return false;
+                                }
+                            }
+                            else
+                            {
+                                if (!emitRepeat('{', needed))
+                                {
+                                    return false;
+                                }
+                                if (!emitString(placeholderRaw))
+                                {
+                                    return false;
+                                }
+                                if (!emitRepeat('}', needed))
+                                {
+                                    return false;
+                                }
+                            }
+                            placeholderRaw.clear();
+                            closingCount = 0;
+                            triple = false;
+                            state = TemplateState::Normal;
+                            braceCount = 0;
+                        }
+                        continue;
+                    }
+                    if (closingCount > 0)
+                    {
+                        for (int i = 0; i < closingCount; ++i)
+                        {
+                            placeholderRaw += '}';
+                        }
+                        closingCount = 0;
+                    }
+                    placeholderRaw += ch;
+                    break;
+                }
+            }
+        }
+
+        if (state == TemplateState::OpenBrace && braceCount > 0)
+        {
+            if (!emitRepeat('{', braceCount))
+            {
+                return false;
+            }
+        }
+        else if (state == TemplateState::Placeholder)
+        {
+            const int needed = triple ? 3 : 2;
+            if (!emitRepeat('{', needed))
+            {
+                return false;
+            }
+            if (!emitString(placeholderRaw))
+            {
+                return false;
+            }
+            if (closingCount > 0)
+            {
+                if (!emitRepeat('}', closingCount))
+                {
+                    return false;
+                }
+            }
+        }
+
+        if (!flushChunk())
+        {
+            return false;
+        }
+        return httpd_resp_send_chunk(_raw, nullptr, 0) == ESP_OK;
     }
 
     // -------- Server --------

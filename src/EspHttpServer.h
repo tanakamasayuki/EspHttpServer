@@ -32,6 +32,7 @@ namespace EspHttpServer
 
     class Request;
     class Response;
+    class StaticInputStream;
 
     using TemplateHandler = std::function<bool(const String &key, Print &out)>;
     using StaticHandler = std::function<void(const StaticInfo &info, Request &req, Response &res)>;
@@ -99,6 +100,7 @@ namespace EspHttpServer
         void setStaticFileSystem(fs::FS *fs);
         void setStaticMemorySource(const uint8_t *data, size_t size);
         void clearStaticSource();
+        bool streamHtmlFromSource(StaticInputStream &stream);
 
         httpd_req_t *_raw = nullptr;
         TemplateHandler _templateHandler;
