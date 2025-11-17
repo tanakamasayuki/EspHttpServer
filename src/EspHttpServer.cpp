@@ -1113,6 +1113,26 @@ namespace EspHttpServer
         entry->memCount = fileCount;
         entry->owner = this;
 
+#if LOG_LOCAL_LEVEL >= ESP_LOG_INFO
+        ESP_LOGI(TAG, "[SERVE][MEM] %s count=%u", entry->uriPrefix.c_str(), static_cast<unsigned>(fileCount));
+        for (size_t i = 0; i < fileCount; ++i)
+        {
+            const char *name = paths[i] ? paths[i] : "(null)";
+            size_t size = sizes[i];
+            bool gz = false;
+            if (name)
+            {
+                size_t len = strlen(name);
+                gz = (len >= 3 && name[len - 3] == '.' && name[len - 2] == 'g' && name[len - 1] == 'z');
+            }
+            ESP_LOGI(TAG, "  [%02u] %s (%u bytes)%s",
+                     static_cast<unsigned>(i),
+                     name,
+                     static_cast<unsigned>(size),
+                     gz ? " gz" : "");
+        }
+#endif
+
         _handlers.push_back(std::move(entry));
         ensureMethodHook(HTTP_GET);
     }
