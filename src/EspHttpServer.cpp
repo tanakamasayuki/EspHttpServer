@@ -450,6 +450,7 @@ namespace EspHttpServer
         httpd_resp_set_type(_raw, type);
         httpd_resp_set_status(_raw, statusString(code));
         httpd_resp_send(_raw, reinterpret_cast<const char *>(data), len);
+        ESP_LOGI(TAG, "[RESP] %d %s %zu bytes", code, type ? type : "-", len);
     }
 
     void Response::send(int code, const char *type, const String &body)
@@ -474,6 +475,7 @@ namespace EspHttpServer
         _chunked = true;
         httpd_resp_set_type(_raw, type);
         httpd_resp_set_status(_raw, statusString(code));
+        ESP_LOGI(TAG, "[RESP] %d %s (chunked)", code, type ? type : "-");
     }
 
     void Response::sendChunk(const uint8_t *data, size_t len)
@@ -499,6 +501,7 @@ namespace EspHttpServer
             return;
         httpd_resp_send_chunk(_raw, nullptr, 0);
         _chunked = false;
+        ESP_LOGI(TAG, "[RESP] chunked end");
     }
 
     void Response::sendStatic()
@@ -515,6 +518,12 @@ namespace EspHttpServer
 
         if (!_staticInfo.exists)
         {
+            String missingPath = _staticInfo.logicalPath;
+            if (missingPath.isEmpty())
+            {
+                missingPath = _staticInfo.relPath;
+            }
+            ESP_LOGI(TAG, "[RESP] 404 static %s", missingPath.c_str());
             httpd_resp_send_err(_raw, HTTPD_404_NOT_FOUND, "Not Found");
             return;
         }
@@ -548,6 +557,7 @@ namespace EspHttpServer
             }
             if (!ok)
             {
+                ESP_LOGE(TAG, "[RESP] 500 static stream failed (%s)", logicalPath.c_str());
                 httpd_resp_send_500(_raw);
             }
             return;
@@ -566,6 +576,7 @@ namespace EspHttpServer
         }
         if (!ok)
         {
+            ESP_LOGE(TAG, "[RESP] 500 static html stream failed (%s)", logicalPath.c_str());
             httpd_resp_send_500(_raw);
         }
     }
@@ -589,9 +600,11 @@ namespace EspHttpServer
     {
         if (!_raw)
             return;
-        httpd_resp_set_status(_raw, statusString(status));
+        const char *statusStr = statusString(status);
+        httpd_resp_set_status(_raw, statusStr);
         httpd_resp_set_hdr(_raw, "Location", location);
         httpd_resp_send(_raw, nullptr, 0);
+        ESP_LOGI(TAG, "[RESP] %s redirect -> %s", statusStr, location);
     }
 
     void Response::setStaticInfo(const StaticInfo &info)
@@ -1118,6 +1131,7 @@ namespace EspHttpServer
     {
         if (!entry || !entry->fs)
         {
+            ESP_LOGE(TAG, "[RESP] 500 static fs missing");
             httpd_resp_send_err(req.raw(), HTTPD_500_INTERNAL_SERVER_ERROR, "FS missing");
             return;
         }
@@ -1355,6 +1369,7 @@ namespace EspHttpServer
         std::vector<String> pathSegments;
         if (!normalizeRoutePath(rawUri, normalized, pathSegments))
         {
+            ESP_LOGW(TAG, "[RESP] 400 invalid path %s", rawUri.c_str());
             httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid path");
             return ESP_OK;
         }
@@ -1396,6 +1411,7 @@ namespace EspHttpServer
 
         if (!bestRoute)
         {
+            ESP_LOGI(TAG, "[404] %s %s", request.method().c_str(), normalized.c_str());
             httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "Not Found");
             return ESP_OK;
         }
