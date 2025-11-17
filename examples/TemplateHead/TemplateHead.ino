@@ -1,24 +1,31 @@
 #include <WiFi.h>
 #include <EspHttpServer.h>
 
-using namespace EspHttpServer;
+EspHttpServer::Server server;
 
-Server server;
+#if __has_include("arduino_secrets.h")
+#include "arduino_secrets.h"
+#else
+#define WIFI_SSID "YourSSID"     // Enter your Wi-Fi SSID here / Wi-FiのSSIDを入力
+#define WIFI_PASS "YourPassword" // Enter your Wi-Fi password here / Wi-Fiのパスワードを入力
+#endif
 
-constexpr const char* kSsid = "YOUR_WIFI_SSID";
-constexpr const char* kPass = "YOUR_WIFI_PASS";
-
-void setup() {
+void setup()
+{
   Serial.begin(115200);
   WiFi.mode(WIFI_STA);
-  WiFi.begin(kSsid, kPass);
-  while (WiFi.status() != WL_CONNECTED) {
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  while (WiFi.status() != WL_CONNECTED)
+  {
     delay(200);
   }
 
+  const String ipStr = WiFi.localIP().toString();
   server.begin();
+  Serial.printf("Server ready: http://%s/template\n", ipStr.c_str());
 
-  server.on("/template", HTTP_GET, [](Request& req, Response& res) {
+  server.on("/template", HTTP_GET, [](EspHttpServer::Request &req, EspHttpServer::Response &res)
+            {
     (void)req;
 
     // en: Inject runtime variables into the HTML template.
@@ -52,9 +59,9 @@ void setup() {
 </html>
 )HTML";
 
-    res.sendText(200, "text/html", html);
-  });
+    res.sendText(200, "text/html", html); });
 }
 
-void loop() {
+void loop()
+{
 }

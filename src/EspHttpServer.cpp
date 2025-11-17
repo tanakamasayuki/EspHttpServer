@@ -12,7 +12,7 @@ const char* TAG = "EspHttpServer";
 // -------- Request --------
 
 String Request::uri() const {
-    return _raw ? String(_raw->uri ? _raw->uri : "") : String();
+    return _raw ? String(_raw->uri) : String();
 }
 
 String Request::method() const {

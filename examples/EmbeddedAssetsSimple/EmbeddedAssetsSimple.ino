@@ -5,25 +5,34 @@
 // ja: Arduino CLI Wrapper で生成されたヘッダーファイルをインクルード。
 #include "assets_www_embed.h"
 
-using namespace EspHttpServer;
+EspHttpServer::Server server;
 
-Server server;
+#if __has_include("arduino_secrets.h")
+#include "arduino_secrets.h"
+#else
+#define WIFI_SSID "YourSSID"     // Enter your Wi-Fi SSID here / Wi-FiのSSIDを入力
+#define WIFI_PASS "YourPassword" // Enter your Wi-Fi password here / Wi-Fiのパスワードを入力
+#endif
 
-constexpr const char* kSsid = "YOUR_WIFI_SSID";
-constexpr const char* kPass = "YOUR_WIFI_PASS";
-
-void setup() {
+void setup()
+{
   Serial.begin(115200);
   WiFi.mode(WIFI_STA);
-  WiFi.begin(kSsid, kPass);
-  while (WiFi.status() != WL_CONNECTED) {
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  while (WiFi.status() != WL_CONNECTED)
+  {
     delay(200);
   }
 
-  if (!server.begin()) {
+  const String ipStr = WiFi.localIP().toString();
+
+  if (!server.begin())
+  {
     Serial.println("Failed to start server");
     return;
   }
+
+  Serial.printf("Server ready: http://%s/embed\n", ipStr.c_str());
 
   // en: Serve embedded assets directly from flash.
   // ja: フラッシュに埋め込んだアセットを配信。
@@ -32,9 +41,11 @@ void setup() {
                      assets_www_file_data,
                      assets_www_file_sizes,
                      assets_www_file_count,
-                     [](const StaticInfo& info, Request& req, Response& res) {
+                     [](const EspHttpServer::StaticInfo &info, EspHttpServer::Request &req, EspHttpServer::Response &res)
+                     {
                        (void)req;
-                       if (!info.exists) {
+                       if (!info.exists)
+                       {
                          res.redirect("/embed/index.html");
                          return;
                        }
@@ -42,5 +53,6 @@ void setup() {
                      });
 }
 
-void loop() {
+void loop()
+{
 }
