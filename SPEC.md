@@ -114,7 +114,7 @@ void serveStatic(const String& uriPrefix,
 ### FS版挙動
 - `uriPrefix` を除去した relPath を解析
 - basePath + relPath を参照
-- `.gz` があれば優先
+- `.gz` があれば優先（ただしクライアントが `.gz` を明示指定した場合に存在しなければ 404 を返す）
 - StaticInfo を構築して Response にセット
 - handler 内で必ず 1 回 sendStatic/sendFile/redirect を呼ぶ
 
@@ -132,7 +132,7 @@ void serveStatic(const String& uriPrefix,
 
 ### メモリFS挙動
 - paths[i] と relPath を照合して一致を探す
-- `.gz` の優先ルールも FS と同様
+- `.gz` の優先ルールも FS と同様（明示 `.gz` 要求が解決できない場合は 404）
 - Response 内に backend=MemFS の静的コンテキストをセット
 - handler の中で sendStatic() を呼ぶと data/size をストリーミング送信
 

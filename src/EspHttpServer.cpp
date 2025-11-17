@@ -1137,27 +1137,52 @@ namespace EspHttpServer
         info.logicalPath = rel;
 
         const bool requestGz = rel.endsWith(".gz");
-        const String baseFsPath = joinFsPath(entry->basePath, rel);
-        const String gzCandidate = baseFsPath + ".gz";
+        String relBase = rel;
+        if (requestGz)
+        {
+            relBase = rel.substring(0, rel.length() - 3);
+            if (relBase.isEmpty())
+            {
+                relBase = "/";
+            }
+        }
+        const String plainFsPath = joinFsPath(entry->basePath, relBase);
+        const String gzFsPath = plainFsPath + ".gz";
 
         bool exists = false;
         bool isDir = false;
         bool useGz = false;
 
-        const bool hasGz = !requestGz && entry->fs->exists(gzCandidate);
-        const bool hasPlain = entry->fs->exists(baseFsPath);
+        const bool hasGz = entry->fs->exists(gzFsPath);
+        const bool hasPlain = entry->fs->exists(plainFsPath);
 
-        if (hasGz)
+        if (requestGz)
         {
-            info.fsPath = gzCandidate;
+            if (hasGz)
+            {
+                info.fsPath = gzFsPath;
+                exists = true;
+                useGz = true;
+            }
+            else
+            {
+                info.fsPath = gzFsPath;
+                exists = false;
+                useGz = true;
+            }
+        }
+        else if (hasGz)
+        {
+            info.fsPath = gzFsPath;
             exists = true;
             useGz = true;
         }
         else if (hasPlain)
         {
-            info.fsPath = baseFsPath;
+            info.fsPath = plainFsPath;
             exists = true;
-            File test = entry->fs->open(baseFsPath, "r");
+            useGz = false;
+            File test = entry->fs->open(plainFsPath, "r");
             if (test)
             {
                 isDir = test.isDirectory();
@@ -1166,12 +1191,12 @@ namespace EspHttpServer
         }
         else
         {
-            info.fsPath = baseFsPath;
+            info.fsPath = plainFsPath;
         }
 
         info.exists = exists;
         info.isDir = isDir;
-        info.isGzipped = useGz || requestGz;
+        info.isGzipped = useGz;
         if (info.isGzipped && info.logicalPath.endsWith(".gz"))
         {
             info.logicalPath = info.logicalPath.substring(0, info.logicalPath.length() - 3);
@@ -1202,9 +1227,19 @@ namespace EspHttpServer
         info.logicalPath = rel;
 
         const bool requestGz = rel.endsWith(".gz");
-        int exactIndex = -1;
+        String relBase = rel;
+        if (requestGz)
+        {
+            relBase = rel.substring(0, rel.length() - 3);
+            if (relBase.isEmpty())
+            {
+                relBase = "/";
+            }
+        }
+        const String gzRel = relBase + ".gz";
+
+        int plainIndex = -1;
         int gzIndex = -1;
-        const String gzRel = rel + ".gz";
         for (size_t i = 0; i < entry->memCount; ++i)
         {
             const char *candidate = entry->memPaths[i];
@@ -1213,11 +1248,11 @@ namespace EspHttpServer
                 continue;
             }
             String candidateStr(candidate);
-            if (rel == candidateStr)
+            if (candidateStr == relBase)
             {
-                exactIndex = static_cast<int>(i);
+                plainIndex = static_cast<int>(i);
             }
-            else if (!requestGz && candidateStr == gzRel)
+            else if (candidateStr == gzRel)
             {
                 gzIndex = static_cast<int>(i);
             }
@@ -1225,15 +1260,23 @@ namespace EspHttpServer
 
         int chosenIndex = -1;
         bool gz = false;
-        if (!requestGz && gzIndex >= 0)
+        if (requestGz)
+        {
+            if (gzIndex >= 0)
+            {
+                chosenIndex = gzIndex;
+                gz = true;
+            }
+        }
+        else if (gzIndex >= 0)
         {
             chosenIndex = gzIndex;
             gz = true;
         }
-        else if (exactIndex >= 0)
+        else if (plainIndex >= 0)
         {
-            chosenIndex = exactIndex;
-            gz = requestGz;
+            chosenIndex = plainIndex;
+            gz = false;
         }
 
         if (chosenIndex >= 0)
@@ -1252,7 +1295,7 @@ namespace EspHttpServer
         else
         {
             info.exists = false;
-            info.isGzipped = false;
+            info.isGzipped = requestGz;
             res.clearStaticSource();
         }
 
