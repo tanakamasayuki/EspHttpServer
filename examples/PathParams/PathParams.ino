@@ -40,11 +40,13 @@ void setup()
               res.sendText(200, "application/json", payload);
             });
 
-  server.on("/files/*path", HTTP_GET,
+  server.on("/files/:type/*path", HTTP_GET,
             [](EspHttpServer::Request &req, EspHttpServer::Response &res)
             {
               const String rest = req.pathParam("path");
-              String message = "Requested path: " + rest;
+              String type = req.pathParam("type");
+              String message = "Requested type: " + type + "\n" +
+                               "Requested path: " + rest;
               res.sendText(200, "text/plain", message);
             });
 }
