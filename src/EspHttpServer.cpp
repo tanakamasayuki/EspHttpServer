@@ -1446,6 +1446,52 @@ namespace EspHttpServer
             info.fsPath = plainFsPath;
         }
 
+        if (exists && isDir)
+        {
+            String dirRel = ensureLeadingSlash(relBase);
+            if (!dirRel.endsWith("/"))
+            {
+                dirRel += "/";
+            }
+            static const char *kIndexCandidates[] = {"index.html", "index.htm"};
+            bool foundIndex = false;
+            for (const char *candidateName : kIndexCandidates)
+            {
+                if (!candidateName)
+                {
+                    continue;
+                }
+                String candidateRel = dirRel + candidateName;
+                const String candidatePlain = joinFsPath(entry->basePath, candidateRel);
+                const String candidateGz = candidatePlain + ".gz";
+                if (entry->fs->exists(candidateGz))
+                {
+                    info.fsPath = candidateGz;
+                    info.logicalPath = ensureLeadingSlash(candidateRel);
+                    exists = true;
+                    useGz = true;
+                    isDir = false;
+                    foundIndex = true;
+                    break;
+                }
+                if (entry->fs->exists(candidatePlain))
+                {
+                    info.fsPath = candidatePlain;
+                    info.logicalPath = ensureLeadingSlash(candidateRel);
+                    exists = true;
+                    useGz = false;
+                    isDir = false;
+                    foundIndex = true;
+                    break;
+                }
+            }
+            if (!foundIndex)
+            {
+                exists = false;
+                isDir = false;
+            }
+        }
+
         info.exists = exists;
         info.isDir = isDir;
         info.isGzipped = useGz;
@@ -1484,8 +1530,15 @@ namespace EspHttpServer
                 relBase = "/";
             }
         }
+        relBase = ensureLeadingSlash(relBase);
         const String gzRel = relBase + ".gz";
+        String dirPrefix = relBase;
+        if (!dirPrefix.endsWith("/"))
+        {
+            dirPrefix += "/";
+        }
 
+        bool hasChildPrefix = false;
         int plainIndex = -1;
         int gzIndex = -1;
         for (size_t i = 0; i < entry->memCount; ++i)
@@ -1496,13 +1549,69 @@ namespace EspHttpServer
                 continue;
             }
             String candidateStr(candidate);
-            if (candidateStr == relBase)
+            if (plainIndex < 0 && candidateStr == relBase)
             {
                 plainIndex = static_cast<int>(i);
             }
-            else if (candidateStr == gzRel)
+            else if (gzIndex < 0 && candidateStr == gzRel)
             {
                 gzIndex = static_cast<int>(i);
+            }
+            if (!hasChildPrefix && candidateStr.startsWith(dirPrefix))
+            {
+                hasChildPrefix = true;
+            }
+        }
+
+        auto findIndexByPath = [&](const String &target) -> int
+        {
+            if (target.isEmpty())
+            {
+                return -1;
+            }
+            for (size_t i = 0; i < entry->memCount; ++i)
+            {
+                const char *candidate = entry->memPaths[i];
+                if (!candidate)
+                {
+                    continue;
+                }
+                if (target == candidate)
+                {
+                    return static_cast<int>(i);
+                }
+            }
+            return -1;
+        };
+
+        bool directoryHint = relPath.endsWith("/") || hasChildPrefix;
+        if (plainIndex < 0 && gzIndex < 0 && directoryHint)
+        {
+            static const char *kIndexCandidates[] = {"index.html", "index.htm"};
+            for (const char *candidateName : kIndexCandidates)
+            {
+                if (!candidateName)
+                {
+                    continue;
+                }
+                String candidateRel = dirPrefix + candidateName;
+                int gzCandidate = findIndexByPath(candidateRel + ".gz");
+                if (gzCandidate >= 0)
+                {
+                    gzIndex = gzCandidate;
+                    plainIndex = -1;
+                    info.logicalPath = candidateRel;
+                    relBase = candidateRel;
+                    break;
+                }
+                int plainCandidate = findIndexByPath(candidateRel);
+                if (plainCandidate >= 0)
+                {
+                    plainIndex = plainCandidate;
+                    info.logicalPath = candidateRel;
+                    relBase = candidateRel;
+                    break;
+                }
             }
         }
 

@@ -115,6 +115,8 @@ void serveStatic(const String& uriPrefix,
 - `uriPrefix` を除去した relPath を解析
 - basePath + relPath を参照
 - `.gz` があれば優先（ただしクライアントが `.gz` を明示指定した場合に存在しなければ 404 を返す）
+- relPath がディレクトリを指す場合は `index.html` → `index.htm` の順で探索し、存在すればその内容を返す（`.gz` があればそちらを優先）
+- 対応するファイルが見つからなければ `StaticInfo.exists = false` となり、`sendStatic()` 側で 404 応答を返す
 - StaticInfo を構築して Response にセット
 - handler 内で必ず 1 回 sendStatic/sendFile/redirect を呼ぶ
 
@@ -133,6 +135,8 @@ void serveStatic(const String& uriPrefix,
 ### メモリFS挙動
 - paths[i] と relPath を照合して一致を探す
 - `.gz` の優先ルールも FS と同様（明示 `.gz` 要求が解決できない場合は 404）
+- relPath がディレクトリ相当（末尾 `/` または子要素が存在）なら `index.html` → `index.htm` を探索し、存在すればその内容を返す（`.gz` 優先、未検出なら 404）
+- 対応するファイルが見つからなければ `StaticInfo.exists = false` となり、`sendStatic()` が 404 を返す
 - Response 内に backend=MemFS の静的コンテキストをセット
 - handler の中で sendStatic() を呼ぶと data/size をストリーミング送信
 
