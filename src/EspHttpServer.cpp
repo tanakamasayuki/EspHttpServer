@@ -421,6 +421,7 @@ namespace EspHttpServer
         _chunked = false;
         _lastStatusCode = 0;
         _requestContext = nullptr;
+        _responseCommitted = false;
     }
 
     void Response::setTemplateHandler(TemplateHandler handler)
@@ -475,6 +476,7 @@ namespace EspHttpServer
 
         httpd_resp_set_type(_raw, type);
         httpd_resp_set_status(_raw, statusString(code));
+        markCommitted();
 
         if (needsProcessing)
         {
@@ -517,6 +519,7 @@ namespace EspHttpServer
         httpd_resp_set_type(_raw, type);
         httpd_resp_set_status(_raw, statusString(code));
         ESP_LOGI(TAG, "[RESP] %d %s (chunked)", code, type ? type : "-");
+        markCommitted();
     }
 
     void Response::sendChunk(const uint8_t *data, size_t len)
@@ -579,6 +582,7 @@ namespace EspHttpServer
         httpd_resp_set_status(_raw, HTTPD_200);
         constexpr int kStaticStatusCode = 200;
         _lastStatusCode = kStaticStatusCode;
+        markCommitted();
 
         const char *sourceLabel = "NONE";
         const char *originPath = "-";
@@ -666,6 +670,7 @@ namespace EspHttpServer
         _lastStatusCode = status;
         httpd_resp_set_status(_raw, statusString(status));
         ESP_LOGI(TAG, "[RESP][ERR] %d", status);
+        markCommitted();
         if (_errorRenderer && _requestContext)
         {
             _errorRenderer(status, *_requestContext, *this);
@@ -674,6 +679,11 @@ namespace EspHttpServer
         const char *message = defaultErrorMessage(status);
         httpd_resp_set_type(_raw, "text/plain");
         httpd_resp_send(_raw, message, strlen(message));
+    }
+
+    bool Response::committed() const
+    {
+        return _responseCommitted;
     }
 
     void Response::redirect(const char *location, int status)
@@ -686,6 +696,7 @@ namespace EspHttpServer
         httpd_resp_set_hdr(_raw, "Location", location);
         httpd_resp_send(_raw, nullptr, 0);
         ESP_LOGI(TAG, "[RESP] %d redirect -> %s", status, location);
+        markCommitted();
     }
 
     void Response::setStaticInfo(const StaticInfo &info)
@@ -733,6 +744,11 @@ namespace EspHttpServer
     void Response::setRequestContext(Request *req)
     {
         _requestContext = req;
+    }
+
+    void Response::markCommitted()
+    {
+        _responseCommitted = true;
     }
 
     const char *Response::defaultErrorMessage(int status)
@@ -1589,6 +1605,17 @@ namespace EspHttpServer
         {
             entry->staticHandler(info, req, res);
         }
+        if (!res.committed())
+        {
+            if (info.exists)
+            {
+                res.sendStatic();
+            }
+            else
+            {
+                res.sendError(HTTPD_404_NOT_FOUND);
+            }
+        }
     }
 
     void Server::setupStaticInfoFromMemory(HandlerEntry *entry, Request &req, Response &res, const String &normalizedUri, const String &relPath)
@@ -1744,6 +1771,17 @@ namespace EspHttpServer
         {
             entry->staticHandler(info, req, res);
         }
+        if (!res.committed())
+        {
+            if (info.exists)
+            {
+                res.sendStatic();
+            }
+            else
+            {
+                res.sendError(HTTPD_404_NOT_FOUND);
+            }
+        }
     }
 
     bool Server::ensureMethodHook(httpd_method_t method)
@@ -1851,6 +1889,10 @@ namespace EspHttpServer
             if (_notFoundHandler)
             {
                 _notFoundHandler(request, response);
+                if (!response.committed())
+                {
+                    response.sendError(HTTPD_404_NOT_FOUND);
+                }
                 return ESP_OK;
             }
             ESP_LOGI(TAG, "[404] %s %s", request.method().c_str(), normalized.c_str());
@@ -1870,6 +1912,10 @@ namespace EspHttpServer
         }
 #endif
         bestRoute->handler(request, response);
+        if (!response.committed())
+        {
+            response.sendError(HTTPD_500_INTERNAL_SERVER_ERROR);
+        }
         return ESP_OK;
     }
 

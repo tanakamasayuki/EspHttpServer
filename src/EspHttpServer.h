@@ -95,6 +95,7 @@ namespace EspHttpServer
         void sendStatic();
         void sendFile(fs::FS &fs, const String &fsPath);
         void sendError(int status);
+        bool committed() const;
 
         void redirect(const char *location, int status = 302);
 
@@ -119,6 +120,7 @@ namespace EspHttpServer
         bool streamHtmlFromSource(StaticInputStream &stream);
         const char *statusString(int code);
         void setRequestContext(Request *req);
+        void markCommitted();
         static const char *defaultErrorMessage(int status);
 
         httpd_req_t *_raw = nullptr;
@@ -130,6 +132,7 @@ namespace EspHttpServer
         StaticInfo _staticInfo;
         bool _chunked = false;
         int _lastStatusCode = 0;
+        bool _responseCommitted = false;
         StaticSourceType _staticSource = StaticSourceType::None;
         fs::FS *_staticFs = nullptr;
         const uint8_t *_memData = nullptr;
