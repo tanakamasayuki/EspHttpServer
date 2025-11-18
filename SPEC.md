@@ -141,7 +141,7 @@ void serveStatic(const String& uriPrefix,
 - 通常ファイルは `File` を開いてディレクトリかどうかを判定し、`StaticInfo.isDir` に反映
 - SPA などのフォールバックは handler 内で `info.exists` を見て `res.sendFile()` / `res.sendError()` などを行う
 - StaticInfo を構築して Response にセット
-- handler 内で必ず 1 回 sendStatic/sendFile/redirect を呼ぶ
+- handler 内で必ず 1 回 sendStatic/sendFile/redirect/sendError を呼ぶ。もし一切呼ばずにリターンした場合はライブラリ側でフォールバックし、`info.exists==true` なら自動的に `sendStatic()` を実行、`info.exists==false` なら `sendError(404)` を返す
 
 ---
 
@@ -163,6 +163,7 @@ void serveStatic(const String& uriPrefix,
 - `StaticInfo.fsPath` にはメモリ上の論理パスを保持し、`setStaticMemorySource()` によって実際のデータ/サイズがレスポンスへ渡される
 - Response 内に backend=MemFS の静的コンテキストをセット
 - handler の中で sendStatic() を呼ぶと data/size をストリーミング送信
+- handler 内で何も送らずに戻った場合は FS 版と同じくフォールバックルールが適用され、`info.exists` に応じて `sendStatic()` または `sendError(404)` が自動実行される
 
 ---
 
@@ -182,6 +183,7 @@ void on(const String& uri,
   - スコア（リテラル+3、パラメータ+2、ワイルドカード+1）＋登録順で最良マッチを選択
 - `req.path()` で正規化済みパス、`req.pathParam("id")` でパラメータ取得
 - どのルートにもマッチしない場合は 404 が返る（`onNotFound` で差し替え可能）
+- 動的ハンドラがレスポンス API を一度も呼ばずに戻った場合はライブラリ側が `sendError(500)` を実行してタイムアウトを防ぐ
 
 ### 4.6 フォールバックハンドラ：onNotFound
 ```
@@ -190,6 +192,7 @@ void onNotFound(RouteHandler handler);
 - `on()` / `serveStatic()` のいずれにもマッチしなかった HTTP リクエストに対して最後に呼ばれる（全体の catch-all に相当）
 - SPA の index.html を返す、共通エラーページを描画する等、任意のレスポンスをここで返してよい
 - 登録しない場合は従来どおり 404 を送信
+- onNotFound 内でもレスポンス API を呼ばずに戻ると自動的に `sendError(404)` が実行される
 
 ---
 
