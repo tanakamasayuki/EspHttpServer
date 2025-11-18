@@ -12,7 +12,7 @@
 - **静的配信** – FS バックエンド（SPIFFS/LittleFS など）とメモリバンドル向け `serveStatic` を用意。gzip 優先、ディレクトリ/存在判定、SPA フォールバックを含む。
 - **Gzip 対応** – `.gz` を検出すると `Content-Encoding: gzip` を設定し、テンプレ/Head Injection をスキップして最速で送出します。
 
-詳細仕様は [SPEC.md](SPEC.md) を参照してください。
+詳細仕様は [SPEC.ja.md](SPEC.ja.md) を参照してください。
 
 ## コンポーネント概要
 
