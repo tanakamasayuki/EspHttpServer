@@ -39,4 +39,5 @@ void loop()
 {
   // en: Nothing to do; esp_http_server handles requests asynchronously.
   // ja: 特に処理不要。esp_http_server がバックグラウンドで処理します。
+  delay(1);
 }
