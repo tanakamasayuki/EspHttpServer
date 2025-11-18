@@ -419,6 +419,7 @@ namespace EspHttpServer
     {
         _raw = raw;
         _chunked = false;
+        _lastStatusCode = 0;
     }
 
     void Response::setTemplateHandler(TemplateHandler handler)
@@ -456,6 +457,7 @@ namespace EspHttpServer
     {
         if (!_raw)
             return;
+        _lastStatusCode = code;
         httpd_resp_set_type(_raw, type);
         httpd_resp_set_status(_raw, statusString(code));
         httpd_resp_send(_raw, reinterpret_cast<const char *>(data), len);
@@ -482,6 +484,7 @@ namespace EspHttpServer
         if (!_raw)
             return;
         _chunked = true;
+        _lastStatusCode = code;
         httpd_resp_set_type(_raw, type);
         httpd_resp_set_status(_raw, statusString(code));
         ESP_LOGI(TAG, "[RESP] %d %s (chunked)", code, type ? type : "-");
@@ -510,7 +513,7 @@ namespace EspHttpServer
             return;
         httpd_resp_send_chunk(_raw, nullptr, 0);
         _chunked = false;
-        ESP_LOGI(TAG, "[RESP] chunked end");
+        ESP_LOGI(TAG, "[RESP] chunked end (%d)", _lastStatusCode);
     }
 
     void Response::sendStatic()
@@ -521,6 +524,7 @@ namespace EspHttpServer
         if (_staticSource == StaticSourceType::None)
         {
             ESP_LOGE(TAG, "Static source missing");
+            _lastStatusCode = 500;
             httpd_resp_send_err(_raw, HTTPD_500_INTERNAL_SERVER_ERROR, "Static source missing");
             return;
         }
@@ -533,6 +537,7 @@ namespace EspHttpServer
                 missingPath = _staticInfo.relPath;
             }
             ESP_LOGI(TAG, "[RESP] 404 static %s", missingPath.c_str());
+            _lastStatusCode = 404;
             httpd_resp_send_err(_raw, HTTPD_404_NOT_FOUND, "Not Found");
             return;
         }
@@ -545,6 +550,27 @@ namespace EspHttpServer
         const String mime = determineMimeType(logicalPath);
         httpd_resp_set_type(_raw, mime.c_str());
         httpd_resp_set_status(_raw, HTTPD_200);
+        constexpr int kStaticStatusCode = 200;
+        _lastStatusCode = kStaticStatusCode;
+
+        const char *sourceLabel = "NONE";
+        const char *originPath = "-";
+        if (_staticSource == StaticSourceType::FileSystem)
+        {
+            sourceLabel = "FS";
+            originPath = _staticInfo.fsPath.c_str();
+        }
+        else if (_staticSource == StaticSourceType::Memory)
+        {
+            sourceLabel = "MEM";
+        }
+        ESP_LOGI(TAG,
+                 "[RESP][STATIC][%s] %d %s (%s) origin=%s",
+                 sourceLabel,
+                 kStaticStatusCode,
+                 logicalPath.c_str(),
+                 _staticInfo.isGzipped ? "gzip" : "plain",
+                 originPath);
 
         const bool htmlEligible = !_staticInfo.isGzipped && isHtmlMime(mime);
         if (_staticInfo.isGzipped)
@@ -567,6 +593,7 @@ namespace EspHttpServer
             if (!ok)
             {
                 ESP_LOGE(TAG, "[RESP] 500 static stream failed (%s)", logicalPath.c_str());
+                _lastStatusCode = 500;
                 httpd_resp_send_500(_raw);
             }
             return;
@@ -586,6 +613,7 @@ namespace EspHttpServer
         if (!ok)
         {
             ESP_LOGE(TAG, "[RESP] 500 static html stream failed (%s)", logicalPath.c_str());
+            _lastStatusCode = 500;
             httpd_resp_send_500(_raw);
         }
     }
@@ -609,11 +637,12 @@ namespace EspHttpServer
     {
         if (!_raw)
             return;
+        _lastStatusCode = status;
         const char *statusStr = statusString(status);
         httpd_resp_set_status(_raw, statusStr);
         httpd_resp_set_hdr(_raw, "Location", location);
         httpd_resp_send(_raw, nullptr, 0);
-        ESP_LOGI(TAG, "[RESP] %s redirect -> %s", statusStr, location);
+        ESP_LOGI(TAG, "[RESP] %d redirect -> %s", status, location);
     }
 
     void Response::setStaticInfo(const StaticInfo &info)

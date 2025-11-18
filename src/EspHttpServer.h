@@ -121,6 +121,7 @@ namespace EspHttpServer
         bool _headInjectionIsRawPtr = false;
         StaticInfo _staticInfo;
         bool _chunked = false;
+        int _lastStatusCode = 0;
         StaticSourceType _staticSource = StaticSourceType::None;
         fs::FS *_staticFs = nullptr;
         const uint8_t *_memData = nullptr;
