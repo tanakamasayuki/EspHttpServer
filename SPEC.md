@@ -34,12 +34,31 @@ void endChunked();
 ```
 void sendStatic();                     // serveStatic が設定した StaticInfo に従う
 void sendFile(fs::FS& fs, const String& fsPath);
+void sendError(int status);
 ```
 
 ### 1.4 リダイレクト
 ```
 void redirect(const char* location, int status = 302);
 ```
+
+- エラー／通常レスポンスに関わらずステータスコードと Location ヘッダーのみ設定し、本文は空
+
+### 1.5 エラーレンダリング
+```
+using ErrorRenderer =
+    std::function<void(int status,
+                       Request& req,
+                       Response& res)>;
+void setErrorRenderer(ErrorRenderer handler);
+void clearErrorRenderer();
+```
+
+- `sendStatic()` やサーバールーティングでエラーを返す場合、まず HTTP ステータスコードのみ設定し、デフォルトでは「Not Found」「Internal Server Error」など最小限のプレーンテキストを返す
+- `sendError(status)` を呼び出すとステータスのみをセットし、登録済みの ErrorRenderer に処理を移譲する（未登録の場合は空ボディのまま）
+- エラー画面を差し替えたい場合は `setErrorRenderer()` で描画用関数を登録し、そこで `res.sendText()` など任意のレンダリングを行う
+- 未登録の場合（または `clearErrorRenderer()` 後）はデフォルトの空ボディ応答
+- ErrorRenderer 内で 200 へ変更することは推奨されない（ステータスは呼び出し元が決定）
 
 ---
 
@@ -60,6 +79,8 @@ void clearTemplateHandler();
 - `{{key}}` → HTMLエスケープして挿入
 - `{{{key}}}` → 生値挿入
 - ハンドラが `false` を返した場合はそのまま `{{key}}` を出す
+- `send()`／`sendText()` で HTML を送る場合も、Content-Type が `text/html` かつ gzip でなければテンプレート＋headInjection が適用され、ストリーム処理でテンプレ置換が実行される
+- `sendStatic()` は gzip でなければテンプレ＋headInjection、gzip ファイルはテンプレ処理無しのバイナリストリーム
 
 ---
 
@@ -117,6 +138,8 @@ void serveStatic(const String& uriPrefix,
 - `.gz` があれば優先（ただしクライアントが `.gz` を明示指定した場合に存在しなければ 404 を返す）
 - relPath がディレクトリを指す場合は `index.html` → `index.htm` の順で探索し、存在すればその内容を返す（`.gz` があればそちらを優先）
 - 対応するファイルが見つからなければ `StaticInfo.exists = false` となり、`sendStatic()` 側で 404 応答を返す
+- 通常ファイルは `File` を開いてディレクトリかどうかを判定し、`StaticInfo.isDir` に反映
+- SPA などのフォールバックは handler 内で `info.exists` を見て `res.sendFile()` / `res.sendError()` などを行う
 - StaticInfo を構築して Response にセット
 - handler 内で必ず 1 回 sendStatic/sendFile/redirect を呼ぶ
 
@@ -137,8 +160,36 @@ void serveStatic(const String& uriPrefix,
 - `.gz` の優先ルールも FS と同様（明示 `.gz` 要求が解決できない場合は 404）
 - relPath がディレクトリ相当（末尾 `/` または子要素が存在）なら `index.html` → `index.htm` を探索し、存在すればその内容を返す（`.gz` 優先、未検出なら 404）
 - 対応するファイルが見つからなければ `StaticInfo.exists = false` となり、`sendStatic()` が 404 を返す
+- `StaticInfo.fsPath` にはメモリ上の論理パスを保持し、`setStaticMemorySource()` によって実際のデータ/サイズがレスポンスへ渡される
 - Response 内に backend=MemFS の静的コンテキストをセット
 - handler の中で sendStatic() を呼ぶと data/size をストリーミング送信
+
+---
+
+## 4.5 動的ルーティング：on
+```
+void on(const String& uri,
+        httpd_method_t method,
+        RouteHandler handler);
+```
+
+- `uri` には `/user/:id` / `/files/*path` のようなパターンを指定できる（詳細は §7 パス仕様）
+- `method` は `HTTP_GET` など esp_http_server の列挙値を利用
+- `handler` には `void(Request& req, Response& res)` 形式のラムダ／関数を渡す
+- 登録されたルートは
+  - URI を正規化（クエリ除去・URL デコード・多重 `/` 解消）
+  - リテラル／`:param`／`*wildcard` に分解
+  - スコア（リテラル+3、パラメータ+2、ワイルドカード+1）＋登録順で最良マッチを選択
+- `req.path()` で正規化済みパス、`req.pathParam("id")` でパラメータ取得
+- どのルートにもマッチしない場合は 404 が返る（`onNotFound` で差し替え可能）
+
+### 4.6 フォールバックハンドラ：onNotFound
+```
+void onNotFound(RouteHandler handler);
+```
+- `on()` / `serveStatic()` のいずれにもマッチしなかった HTTP リクエストに対して最後に呼ばれる（全体の catch-all に相当）
+- SPA の index.html を返す、共通エラーページを描画する等、任意のレスポンスをここで返してよい
+- 登録しない場合は従来どおり 404 を送信
 
 ---
 
