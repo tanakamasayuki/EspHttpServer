@@ -458,8 +458,26 @@ namespace EspHttpServer
         if (!_raw)
             return;
         _lastStatusCode = code;
+        const String typeStr = type ? String(type) : String();
+        const bool htmlEligible = isHtmlMime(typeStr);
+        const bool needsProcessing = htmlEligible && (_templateHandler || (_headInjectionPtr && _headInjectionPtr[0]));
+
         httpd_resp_set_type(_raw, type);
         httpd_resp_set_status(_raw, statusString(code));
+
+        if (needsProcessing)
+        {
+            StaticInputStream stream(data, len);
+            if (!streamHtmlFromSource(stream))
+            {
+                ESP_LOGE(TAG, "[RESP] %d html processing failed", code);
+                httpd_resp_send_500(_raw);
+                return;
+            }
+            ESP_LOGI(TAG, "[RESP][TPL] %d %s processed", code, type ? type : "-", len);
+            return;
+        }
+
         httpd_resp_send(_raw, reinterpret_cast<const char *>(data), len);
         ESP_LOGI(TAG, "[RESP] %d %s %zu bytes", code, type ? type : "-", len);
     }

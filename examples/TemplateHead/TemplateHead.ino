@@ -32,7 +32,7 @@ void setup()
     // ja: 実行時変数をテンプレートへ埋め込む。
     res.setTemplateHandler([](const String& key, Print& out) -> bool {
       if (key == "name") {
-        out.print("ESP32");
+        out.print("<b>ESP32</b>");
         return true;
       }
       if (key == "version") {
