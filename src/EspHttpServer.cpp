@@ -6,6 +6,8 @@
 #include <cctype>
 #include <lwip/sockets.h>
 #include <lwip/ip4_addr.h>
+#include <memory>
+#include <new>
 
 #ifdef CORE_DEBUG_LEVEL
 #undef LOG_LOCAL_LEVEL
@@ -153,15 +155,22 @@ namespace EspHttpServer
                 ESP_LOGE(TAG, "Failed to open %s", path.c_str());
                 return false;
             }
-            uint8_t buffer[1024];
+            constexpr size_t kChunkSize = 1024;
+            std::unique_ptr<uint8_t[]> buffer(new (std::nothrow) uint8_t[kChunkSize]);
+            if (!buffer)
+            {
+                ESP_LOGE(TAG, "Failed to allocate stream buffer");
+                file.close();
+                return false;
+            }
             while (file.available())
             {
-                const size_t readLen = file.read(buffer, sizeof(buffer));
+                const size_t readLen = file.read(buffer.get(), kChunkSize);
                 if (readLen == 0)
                 {
                     break;
                 }
-                if (httpd_resp_send_chunk(raw, reinterpret_cast<const char *>(buffer), readLen) != ESP_OK)
+                if (httpd_resp_send_chunk(raw, reinterpret_cast<const char *>(buffer.get()), readLen) != ESP_OK)
                 {
                     file.close();
                     return false;
