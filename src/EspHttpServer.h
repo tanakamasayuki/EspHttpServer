@@ -38,6 +38,7 @@ namespace EspHttpServer
     using TemplateHandler = std::function<bool(const String &key, Print &out)>;
     using StaticHandler = std::function<void(const StaticInfo &info, Request &req, Response &res)>;
     using RouteHandler = std::function<void(Request &req, Response &res)>;
+    using ErrorRenderer = std::function<void(int status, Request &req, Response &res)>;
 
     // en: Lightweight holder for esp_http_server request data.
     // ja: esp_http_server のリクエスト情報を扱う薄いラッパークラス。
@@ -93,8 +94,12 @@ namespace EspHttpServer
 
         void sendStatic();
         void sendFile(fs::FS &fs, const String &fsPath);
+        void sendError(int status);
 
         void redirect(const char *location, int status = 302);
+
+        static void setErrorRenderer(ErrorRenderer handler);
+        static void clearErrorRenderer();
 
         void setStaticInfo(const StaticInfo &info);
 
@@ -113,12 +118,15 @@ namespace EspHttpServer
         void clearStaticSource();
         bool streamHtmlFromSource(StaticInputStream &stream);
         const char *statusString(int code);
+        void setRequestContext(Request *req);
+        static const char *defaultErrorMessage(int status);
 
         httpd_req_t *_raw = nullptr;
         TemplateHandler _templateHandler;
         String _headInjection;
         const char *_headInjectionPtr = nullptr;
         bool _headInjectionIsRawPtr = false;
+        Request *_requestContext = nullptr;
         StaticInfo _staticInfo;
         bool _chunked = false;
         int _lastStatusCode = 0;
@@ -127,6 +135,7 @@ namespace EspHttpServer
         const uint8_t *_memData = nullptr;
         size_t _memSize = 0;
         char _statusBuffer[16] = {0};
+        static ErrorRenderer _errorRenderer;
     };
 
     // en: Minimal server wrapper coordinating route and static registrations.
@@ -141,6 +150,7 @@ namespace EspHttpServer
         void end();
 
         void on(const String &uri, httpd_method_t method, RouteHandler handler);
+        void onNotFound(RouteHandler handler);
 
         void serveStatic(const String &uriPrefix,
                          fs::FS &fs,
@@ -222,6 +232,7 @@ namespace EspHttpServer
         std::vector<std::unique_ptr<HandlerEntry>> _handlers;
         std::vector<DynamicRoute> _dynamicRoutes;
         std::vector<std::unique_ptr<MethodHook>> _methodHooks;
+        RouteHandler _notFoundHandler;
     };
 
 } // namespace EspHttpServer

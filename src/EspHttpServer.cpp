@@ -420,6 +420,7 @@ namespace EspHttpServer
         _raw = raw;
         _chunked = false;
         _lastStatusCode = 0;
+        _requestContext = nullptr;
     }
 
     void Response::setTemplateHandler(TemplateHandler handler)
@@ -453,6 +454,16 @@ namespace EspHttpServer
         _headInjectionIsRawPtr = false;
     }
 
+    void Response::setErrorRenderer(ErrorRenderer handler)
+    {
+        _errorRenderer = std::move(handler);
+    }
+
+    void Response::clearErrorRenderer()
+    {
+        _errorRenderer = nullptr;
+    }
+
     void Response::send(int code, const char *type, const uint8_t *data, size_t len)
     {
         if (!_raw)
@@ -471,7 +482,7 @@ namespace EspHttpServer
             if (!streamHtmlFromSource(stream))
             {
                 ESP_LOGE(TAG, "[RESP] %d html processing failed", code);
-                httpd_resp_send_500(_raw);
+                sendError(HTTPD_500_INTERNAL_SERVER_ERROR);
                 return;
             }
             ESP_LOGI(TAG, "[RESP][TPL] %d %s processed", code, type ? type : "-", len);
@@ -542,8 +553,7 @@ namespace EspHttpServer
         if (_staticSource == StaticSourceType::None)
         {
             ESP_LOGE(TAG, "Static source missing");
-            _lastStatusCode = 500;
-            httpd_resp_send_err(_raw, HTTPD_500_INTERNAL_SERVER_ERROR, "Static source missing");
+            sendError(HTTPD_500_INTERNAL_SERVER_ERROR);
             return;
         }
 
@@ -555,8 +565,7 @@ namespace EspHttpServer
                 missingPath = _staticInfo.relPath;
             }
             ESP_LOGI(TAG, "[RESP] 404 static %s", missingPath.c_str());
-            _lastStatusCode = 404;
-            httpd_resp_send_err(_raw, HTTPD_404_NOT_FOUND, "Not Found");
+            sendError(HTTPD_404_NOT_FOUND);
             return;
         }
 
@@ -611,8 +620,7 @@ namespace EspHttpServer
             if (!ok)
             {
                 ESP_LOGE(TAG, "[RESP] 500 static stream failed (%s)", logicalPath.c_str());
-                _lastStatusCode = 500;
-                httpd_resp_send_500(_raw);
+                sendError(HTTPD_500_INTERNAL_SERVER_ERROR);
             }
             return;
         }
@@ -631,8 +639,7 @@ namespace EspHttpServer
         if (!ok)
         {
             ESP_LOGE(TAG, "[RESP] 500 static html stream failed (%s)", logicalPath.c_str());
-            _lastStatusCode = 500;
-            httpd_resp_send_500(_raw);
+            sendError(HTTPD_500_INTERNAL_SERVER_ERROR);
         }
     }
 
@@ -649,6 +656,24 @@ namespace EspHttpServer
         setStaticFileSystem(&fs);
         setStaticInfo(info);
         sendStatic();
+    }
+
+    void Response::sendError(int status)
+    {
+        if (!_raw)
+            return;
+        _chunked = false;
+        _lastStatusCode = status;
+        httpd_resp_set_status(_raw, statusString(status));
+        ESP_LOGI(TAG, "[RESP][ERR] %d", status);
+        if (_errorRenderer && _requestContext)
+        {
+            _errorRenderer(status, *_requestContext, *this);
+            return;
+        }
+        const char *message = defaultErrorMessage(status);
+        httpd_resp_set_type(_raw, "text/plain");
+        httpd_resp_send(_raw, message, strlen(message));
     }
 
     void Response::redirect(const char *location, int status)
@@ -704,6 +729,36 @@ namespace EspHttpServer
         snprintf(_statusBuffer, sizeof(_statusBuffer), "%d", code);
         return _statusBuffer;
     }
+
+    void Response::setRequestContext(Request *req)
+    {
+        _requestContext = req;
+    }
+
+    const char *Response::defaultErrorMessage(int status)
+    {
+        switch (status)
+        {
+        case 400:
+            return "Bad Request";
+        case 401:
+            return "Unauthorized";
+        case 403:
+            return "Forbidden";
+        case 404:
+            return "Not Found";
+        case 405:
+            return "Method Not Allowed";
+        case 500:
+            return "Internal Server Error";
+        case 503:
+            return "Service Unavailable";
+        default:
+            return "Error";
+        }
+    }
+
+    ErrorRenderer Response::_errorRenderer;
 
     bool Response::streamHtmlFromSource(StaticInputStream &stream)
     {
@@ -1062,187 +1117,187 @@ namespace EspHttpServer
     }
 
 #if LOG_LOCAL_LEVEL >= ESP_LOG_INFO
-        String normalizeBasePathForLog(const String &input)
+    String normalizeBasePathForLog(const String &input)
+    {
+        String normalized = input;
+        if (normalized.isEmpty())
         {
-            String normalized = input;
-            if (normalized.isEmpty())
-            {
-                normalized = "/";
-            }
-            while (normalized.length() > 1 && normalized.endsWith("/"))
-            {
-                normalized.remove(normalized.length() - 1);
-            }
-            if (!normalized.startsWith("/"))
-            {
-                normalized = "/" + normalized;
-            }
-            return normalized;
+            normalized = "/";
         }
-
-        String relativePathForLog(const String &normalizedBase, const String &fullPath)
+        while (normalized.length() > 1 && normalized.endsWith("/"))
         {
-            if (fullPath.isEmpty())
-            {
-                return String("/");
-            }
-            String relative = fullPath;
-            if (normalizedBase != "/")
-            {
-                if (relative.startsWith(normalizedBase))
-                {
-                    relative = relative.substring(normalizedBase.length());
-                }
-                else
-                {
-                    String baseNoSlash = normalizedBase.substring(1);
-                    if (relative.startsWith(baseNoSlash))
-                    {
-                        relative = relative.substring(baseNoSlash.length());
-                    }
-                }
-            }
-            if (relative.startsWith("/"))
-            {
-                relative.remove(0, 1);
-            }
-            if (relative.isEmpty())
-            {
-                return String("/");
-            }
-            return relative;
+            normalized.remove(normalized.length() - 1);
         }
-
-        String makeLogIndent(int depth)
+        if (!normalized.startsWith("/"))
         {
-            String indent;
-            if (depth <= 0)
+            normalized = "/" + normalized;
+        }
+        return normalized;
+    }
+
+    String relativePathForLog(const String &normalizedBase, const String &fullPath)
+    {
+        if (fullPath.isEmpty())
+        {
+            return String("/");
+        }
+        String relative = fullPath;
+        if (normalizedBase != "/")
+        {
+            if (relative.startsWith(normalizedBase))
             {
-                return indent;
+                relative = relative.substring(normalizedBase.length());
             }
-            indent.reserve(depth * 2);
-            for (int i = 0; i < depth; ++i)
+            else
             {
-                indent += "  ";
+                String baseNoSlash = normalizedBase.substring(1);
+                if (relative.startsWith(baseNoSlash))
+                {
+                    relative = relative.substring(baseNoSlash.length());
+                }
             }
+        }
+        if (relative.startsWith("/"))
+        {
+            relative.remove(0, 1);
+        }
+        if (relative.isEmpty())
+        {
+            return String("/");
+        }
+        return relative;
+    }
+
+    String makeLogIndent(int depth)
+    {
+        String indent;
+        if (depth <= 0)
+        {
             return indent;
         }
-
-        String buildFullPath(const String &base, const String &entryName)
+        indent.reserve(depth * 2);
+        for (int i = 0; i < depth; ++i)
         {
-            if (entryName.isEmpty())
+            indent += "  ";
+        }
+        return indent;
+    }
+
+    String buildFullPath(const String &base, const String &entryName)
+    {
+        if (entryName.isEmpty())
+        {
+            return base;
+        }
+        if (entryName.startsWith("/"))
+        {
+            return entryName;
+        }
+        if (base == "/")
+        {
+            return String("/") + entryName;
+        }
+        String combined = base;
+        if (!combined.endsWith("/"))
+        {
+            combined += "/";
+        }
+        combined += entryName;
+        return combined;
+    }
+
+    void logFsDirectory(fs::FS &fs, const String &normalizedBase, const String &fsPath, int depth)
+    {
+        File dir = fs.open(fsPath);
+        if (!dir || !dir.isDirectory())
+        {
+            if (dir)
             {
-                return base;
+                dir.close();
             }
-            if (entryName.startsWith("/"))
-            {
-                return entryName;
-            }
-            if (base == "/")
-            {
-                return String("/") + entryName;
-            }
-            String combined = base;
-            if (!combined.endsWith("/"))
-            {
-                combined += "/";
-            }
-            combined += entryName;
-            return combined;
+            return;
         }
 
-        void logFsDirectory(fs::FS &fs, const String &normalizedBase, const String &fsPath, int depth)
+        while (true)
         {
-            File dir = fs.open(fsPath);
-            if (!dir || !dir.isDirectory())
+            File entry = dir.openNextFile();
+            if (!entry)
             {
-                if (dir)
-                {
-                    dir.close();
-                }
-                return;
+                break;
             }
-
-            while (true)
+            const char *rawName = entry.name();
+            String entryName = rawName ? String(rawName) : String();
+            String fullPath = buildFullPath(fsPath, entryName);
+            if (fullPath.isEmpty())
             {
-                File entry = dir.openNextFile();
-                if (!entry)
-                {
-                    break;
-                }
-                const char *rawName = entry.name();
-                String entryName = rawName ? String(rawName) : String();
-                String fullPath = buildFullPath(fsPath, entryName);
-                if (fullPath.isEmpty())
-                {
-                    fullPath = fsPath;
-                }
-                String relative = relativePathForLog(normalizedBase, fullPath);
-                String indent = makeLogIndent(depth);
-                if (entry.isDirectory())
-                {
-                    ESP_LOGI(TAG, "  %s%s/ [%s]", indent.c_str(), relative.c_str(), fullPath.c_str());
-                    entry.close();
-                    logFsDirectory(fs, normalizedBase, fullPath, depth + 1);
-                }
-                else
-                {
-                    size_t size = entry.size();
-                    bool gz = fullPath.endsWith(".gz");
-                    ESP_LOGI(TAG, "  %s%s (%u bytes)%s [%s]",
-                             indent.c_str(),
-                             relative.c_str(),
-                             static_cast<unsigned>(size),
-                             gz ? " gz" : "",
-                             fullPath.c_str());
-                    entry.close();
-                }
+                fullPath = fsPath;
             }
-
-            dir.close();
-        }
-
-        void logFileSystemListing(fs::FS &fs, const String &basePath)
-        {
-            String openPath = basePath;
-            if (openPath.isEmpty())
+            String relative = relativePathForLog(normalizedBase, fullPath);
+            String indent = makeLogIndent(depth);
+            if (entry.isDirectory())
             {
-                openPath = "/";
+                ESP_LOGI(TAG, "  %s%s/ [%s]", indent.c_str(), relative.c_str(), fullPath.c_str());
+                entry.close();
+                logFsDirectory(fs, normalizedBase, fullPath, depth + 1);
             }
-            File root = fs.open(openPath);
-            if (!root && !openPath.startsWith("/"))
+            else
             {
-                String alt = "/" + openPath;
-                root = fs.open(alt);
-                if (root)
-                {
-                    openPath = alt;
-                }
-            }
-            if (!root)
-            {
-                ESP_LOGW(TAG, "[SERVE][FS] unable to list %s", basePath.c_str());
-                return;
-            }
-
-            String normalizedBase = normalizeBasePathForLog(openPath);
-            if (!root.isDirectory())
-            {
-                size_t size = root.size();
-                bool gz = normalizedBase.endsWith(".gz");
-                ESP_LOGI(TAG, "[SERVE][FS] %s (%u bytes)%s [%s]",
-                         normalizedBase.c_str(),
+                size_t size = entry.size();
+                bool gz = fullPath.endsWith(".gz");
+                ESP_LOGI(TAG, "  %s%s (%u bytes)%s [%s]",
+                         indent.c_str(),
+                         relative.c_str(),
                          static_cast<unsigned>(size),
                          gz ? " gz" : "",
-                         normalizedBase.c_str());
-                root.close();
-                return;
+                         fullPath.c_str());
+                entry.close();
             }
-
-            ESP_LOGI(TAG, "[SERVE][FS] listing %s", normalizedBase.c_str());
-            root.close();
-            logFsDirectory(fs, normalizedBase, normalizedBase, 0);
         }
+
+        dir.close();
+    }
+
+    void logFileSystemListing(fs::FS &fs, const String &basePath)
+    {
+        String openPath = basePath;
+        if (openPath.isEmpty())
+        {
+            openPath = "/";
+        }
+        File root = fs.open(openPath);
+        if (!root && !openPath.startsWith("/"))
+        {
+            String alt = "/" + openPath;
+            root = fs.open(alt);
+            if (root)
+            {
+                openPath = alt;
+            }
+        }
+        if (!root)
+        {
+            ESP_LOGW(TAG, "[SERVE][FS] unable to list %s", basePath.c_str());
+            return;
+        }
+
+        String normalizedBase = normalizeBasePathForLog(openPath);
+        if (!root.isDirectory())
+        {
+            size_t size = root.size();
+            bool gz = normalizedBase.endsWith(".gz");
+            ESP_LOGI(TAG, "[SERVE][FS] %s (%u bytes)%s [%s]",
+                     normalizedBase.c_str(),
+                     static_cast<unsigned>(size),
+                     gz ? " gz" : "",
+                     normalizedBase.c_str());
+            root.close();
+            return;
+        }
+
+        ESP_LOGI(TAG, "[SERVE][FS] listing %s", normalizedBase.c_str());
+        root.close();
+        logFsDirectory(fs, normalizedBase, normalizedBase, 0);
+    }
 #endif
 
     void Server::end()
@@ -1282,6 +1337,11 @@ namespace EspHttpServer
         route.score = score;
         route.handler = std::move(handler);
         _dynamicRoutes.push_back(std::move(route));
+    }
+
+    void Server::onNotFound(RouteHandler handler)
+    {
+        _notFoundHandler = std::move(handler);
     }
 
     void Server::serveStatic(const String &uriPrefix,
@@ -1397,7 +1457,7 @@ namespace EspHttpServer
         if (!entry || !entry->fs)
         {
             ESP_LOGE(TAG, "[RESP] 500 static fs missing");
-            httpd_resp_send_err(req.raw(), HTTPD_500_INTERNAL_SERVER_ERROR, "FS missing");
+            res.sendError(HTTPD_500_INTERNAL_SERVER_ERROR);
             return;
         }
 
@@ -1732,6 +1792,7 @@ namespace EspHttpServer
     {
         Request request(req);
         Response response(req);
+        response.setRequestContext(&request);
 
         const String rawUri = request.uri();
 #if LOG_LOCAL_LEVEL >= ESP_LOG_INFO
@@ -1746,7 +1807,7 @@ namespace EspHttpServer
         if (!normalizeRoutePath(rawUri, normalized, pathSegments))
         {
             ESP_LOGW(TAG, "[RESP] 400 invalid path %s", rawUri.c_str());
-            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid path");
+            response.sendError(HTTPD_400_BAD_REQUEST);
             return ESP_OK;
         }
 
@@ -1787,8 +1848,13 @@ namespace EspHttpServer
 
         if (!bestRoute)
         {
+            if (_notFoundHandler)
+            {
+                _notFoundHandler(request, response);
+                return ESP_OK;
+            }
             ESP_LOGI(TAG, "[404] %s %s", request.method().c_str(), normalized.c_str());
-            httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "Not Found");
+            response.sendError(HTTPD_404_NOT_FOUND);
             return ESP_OK;
         }
 
