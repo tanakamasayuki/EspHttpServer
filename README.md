@@ -1,101 +1,62 @@
 # ESP32 HTTP Server Library
 
-[日本語 README](README.ja.md)
+[Japanese README](README.ja.md)
 
-ESP32 向けに `esp_http_server` をベースとして構築する軽量な Arduino ライブラリの仕様まとめです。動的レスポンス、テンプレート、head injection、gzip を含む静的ファイル配信など、Web アプリで必要となる機能をワンストップで提供することを目指しています。
+This repository documents a lightweight HTTP server stack for ESP32/Arduino built on top of `esp_http_server`. The goal is to ship a coherent set of behaviors—dynamic handlers, template & head injections, filesystem/in-memory static serving with gzip, and consistent error hooks—so that sketches can follow the same rules. The full specification lives in [SPEC.md](SPEC.md).
 
 ## Highlights
 
-- **Response API** – Direct send helpers, chunked transfer, static streaming, and HTTP redirects. Designed around `Request`/`Response` handlers similar to popular Arduino servers.
-- **Template Engine** – HTML-only placeholder replacement (`{{key}}` escaped, `{{{key}}}` raw) with user-provided callbacks. Automatically disabled for gzipped assets.
-- **Head Injection** – Optional snippet inserted immediately after `<head>` when serving HTML, enabling CSP tags, scripts, or analytics without manual template edits.
-- **Static Serving** – `serveStatic` for filesystem backends (SPIFFS/LittleFS/etc.) and in-memory bundles. Supports gzip preference, directory metadata, and SPA fallbacks.
-- **Gzip Awareness** – Static responses detect `.gz` pairs, set `Content-Encoding`, and bypass template/head injection for maximal performance.
+- **Response Stack** – `send()`/`sendText()`/`sendStatic()`/`sendFile()` plus chunked helpers, redirects, and a `sendError()` path that feeds a global `ErrorRenderer`.
+- **Templates & Head Injection** – Streamed HTML renderer handles `{{key}}` (escaped) / `{{{key}}}` (raw). Head injection drops CSP/script/meta snippets right after `<head>` so you can toggle analytics or policy tags without editing every file. Both features automatically disable themselves for gzipped payloads, so precompressed assets stay untouched.
+- **Static Lifecycle** – `serveStatic()` resolves filesystem or memory assets, prefers `.gz` siblings, auto-detects `index.html|htm`, and even auto-sends (or 404s) if a handler forgets to respond.
+- **Routing & Fallbacks** – `on()` supports literal/param/wildcard scoring, `onNotFound()` acts as a catch-all, and unhandled requests automatically return 500/404 instead of stalling.
+- **Logging Discipline** – All response logs share the `[RESP][tag] <code> ...` format and respect the board’s Core Debug Level so you can dial verbosity from “silent” to “deep internals”.
 
-See [SPEC.md](SPEC.md) for the complete technical requirements.
+## Specification Overview
 
-## Components
-
-### Response Helpers
+### Response API
 ```cpp
 void send(int code, const char* type,
           const uint8_t* data, size_t len);
-void send(int code, const char* type,
-          const String& body);
+void sendText(int code, const char* type,
+              const String& text);
 void beginChunked(int code, const char* type);
-void sendChunk(const uint8_t* data, size_t len);
+void sendChunk(const char* text);
 void sendStatic();
 void sendFile(fs::FS& fs, const String& fsPath);
+void sendError(int status);
 void redirect(const char* location, int status = 302);
 ```
+- HTML responses (including `send()` / `sendText()`) pass through the streaming template + head injection pipeline when `Content-Type` is `text/html` and the payload is not gzipped.
+- `sendStatic()`/`sendFile()` stream data directly from FS or memory chunks; gzipped assets automatically set `Content-Encoding: gzip` and skip templating.
+- `sendError()` sets the status, logs `[RESP][ERR] <code>`, and either invokes the global `ErrorRenderer` or emits a built-in short message (e.g., “Not Found”).
+- `Response::setErrorRenderer()` lets sketches render custom HTML/JSON error pages without rewriting every handler.
 
-These APIs wrap `esp_http_server` to simplify dynamic text/binary responses, chunked streaming, and static file reads. `sendStatic()` relies on a `StaticInfo` context prepared by `serveStatic`.
+### Static Serving Lifecycle
+- `serveStatic("/www", LittleFS, "/wwwroot", handler)` normalizes the URI, joins it with `basePath`, prefers `.gz`, detects directories, and probes `index.html` then `index.htm`.
+- The memory variant accepts parallel arrays (`paths`, `data`, `sizes`) and mirrors the same gzip + directory probing logic.
+- Handlers still get the final say (e.g., SPA fallback). But if they **forget** to call `sendStatic()`/`sendFile()`/`sendError()`/`redirect()`, the library auto-falls back:
+  - `StaticInfo.exists == true` → call `sendStatic()` automatically.
+  - Otherwise → emit `sendError(404)`.
 
-### Template Engine & Head Injection
+### Routing & Catch-alls
+- `server.on("/user/:id", HTTP_GET, handler)` parses segments into literal/parameter/wildcard buckets. Routes are scored (`literal +3`, `param +2`, `wildcard +1`) and registration order breaks ties.
+- If **no** dynamic route matches, `onNotFound()` runs. Leaving that handler without a response triggers an automatic 404.
+- If a dynamic handler (or `onNotFound()`) returns without sending, the library calls `sendError(500)` (or 404 for the catch-all) so connections never hang.
 
-Applications can call `setTemplateHandler` with a `std::function` that receives placeholder keys and a `Print` instance for emission. Head injection stores either a `const char*` or `String` snippet and applies it only when a non-gzipped HTML response passes through the renderer.
+### Logging & Debug Levels
+- `[RESP]` logs are uniform: `send()` logs `[RESP] 200 text/html 512 bytes`, `sendStatic()` logs `[RESP][STATIC][FS] 200 /index.html (plain) origin=/wwwroot/index.html`, errors use `[RESP][ERR] 404`.
+- Choose **Core Debug Level** (None/Error/Info/Debug) in the Arduino IDE or via `arduino-cli` build flags. `None` suppresses every log—even `ESP_LOGE`.
 
-### Static Routing
+## Examples (see `examples/`)
+- **BasicDynamic** – Hello-world dynamic response.
+- **ChunkedStream** – Emits JSON via chunked transfer.
+- **TemplateHead** – Demonstrates `setTemplateHandler` + head injection.
+- **StaticFS** – Serves `/data` uploaded to LittleFS/SPIFFS.
+- **EmbeddedAssetsSimple** – Shows how bundled headers generated by the VS Code extension feed `serveStatic`.
+- **PathParams** – Uses `req.pathParam()` for literal/param/wildcard routes.
+- **ErrorHandling** – Registers `Response::setErrorRenderer()` and `onNotFound()` to deliver branded error pages.
 
-Two overloads of `serveStatic` populate a `StaticInfo` struct and invoke a user handler:
-
-- **Filesystem backend** – Resolves URI prefix to `basePath`, checks for `.gz` variants, and exposes metadata such as `exists`, `isDir`, and `logicalPath`.
-- **Memory backend** – Searches provided arrays of paths/data/size for matches, supporting gzipped priorities identical to the filesystem flow.
-
-Within the handler, developers must call exactly one of `sendStatic()`, `sendFile()`, or `redirect()` to complete the response.
-
-### Example Usage
-
-```cpp
-server.serveStatic("/view", LittleFS, "/tmpl",
-  [&](const StaticInfo& info, Request& req, Response& res){
-      res.setTemplateHandler(...);
-      res.setHeadInjection("<script src='/app.js'></script>");
-      res.sendStatic();
-  });
-```
-
-```cpp
-server.serveStatic("/static", g_paths, g_data, g_sizes, g_fileCount,
-  [&](const StaticInfo& info, Request& req, Response& res){
-      if (!info.isGzipped && info.logicalPath.endsWith(".html")) {
-          res.setHeadInjection("<script src='/static/app.js'></script>");
-      }
-      res.sendStatic();
-  });
-```
-
-For SPA fallbacks, check `info.exists` and fall back to `sendFile()` with your index document when needed.
-
-### Debug Levels
-
-Select the Arduino board's **Core Debug Level** (or pass `--build-property build.code.debug=<level>` when using `arduino-cli`) to control logging. EspHttpServer relies on `ESP_LOGx` macros and the default `None` suppresses every log (even `ESP_LOGE`), so raise it during development if you want diagnostics:
-
-- `None` – disables all logging
-- `Error` – only critical failures (`ESP_LOGE`)
-- `Info` – request lines and static route resolutions
-- `Debug` – parameter dumps and detailed static file resolution
-
-## Examples
-
-- **BasicDynamic** – Minimal dynamic handler returning plain text.
-- **ChunkedStream** – Streams JSON via chunked transfer.
-- **TemplateHead** – Demonstrates template handlers plus head injection.
-- **StaticFS** – Serves files uploaded from `examples/StaticFS/data` (use Arduino IDE/CLI upload or VS Code extension).
-- **EmbeddedAssetsSimple** – Demonstrates converting `examples/EmbeddedAssetsSimple/assets_www` into `assets_www_embed.h` and serving flash-resident files over `/embed`.
-- **PathParams** – Shows multi-parameter routes (`:id`) and wildcard captures via `req.pathParam()`.
-
-## VS Code Workflow
-
-The [Arduino CLI Wrapper](https://marketplace.visualstudio.com/items?itemName=tanakamasayuki.vscode-arduino-cli-wrapper) extension can:
-
-- Upload `data/` folders (e.g., `examples/StaticFS/data`) to LittleFS/SPIFFS targets directly from VS Code.
-- Convert asset folders (e.g., `examples/assetsTest/assets_www`) into header files such as `assets_www_embed.h`, honoring `.assetsconfig` for minification and gzip output.
-
-Re-run the extension each time you edit assets so that the generated headers stay in sync with the source files.
-
-## Next Steps
-
-1. Implement the `Request`/`Response` classes and wire them to `esp_http_server`.
-2. Build filesystem adapters (LittleFS, SPIFFS, SD) and memory bundles for static assets.
-3. Provide utilities for gzip generation and MIME type resolution.
+## Tooling Workflow
+- The [Arduino CLI Wrapper](https://marketplace.visualstudio.com/items?itemName=tanakamasayuki.vscode-arduino-cli-wrapper) VS Code extension uploads `data/` folders to FS targets and converts asset directories into header bundles (`assets_www_embed.h`) with optional gzip/minify.
+- Re-run the generator whenever assets change so the embedded headers stay in sync.
