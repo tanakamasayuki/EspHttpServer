@@ -1055,7 +1055,8 @@ namespace EspHttpServer
             return false;
         }
 
-        auto processToken = [&](const String &token) {
+        auto processToken = [&](const String &token)
+        {
             String working = token;
             trimSpaces(working);
             if (working.isEmpty())
