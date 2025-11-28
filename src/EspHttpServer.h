@@ -75,6 +75,28 @@ namespace EspHttpServer
         bool hasCookie(const String &name) const;
         String cookie(const String &name) const;
         void forEachCookie(std::function<bool(const String &name, const String &value)> cb) const;
+        bool hasQueryParam(const String &name) const;
+        String queryParam(const String &name) const;
+        void forEachQueryParam(std::function<bool(const String &name, const String &value)> cb) const;
+
+        bool hasFormParam(const String &name) const;
+        String formParam(const String &name) const;
+        void forEachFormParam(std::function<bool(const String &name, const String &value)> cb) const;
+        static void setMaxFormSize(size_t bytes);
+
+        struct MultipartFieldInfo
+        {
+            String name;
+            String filename;
+            String contentType;
+            size_t size = 0; // 0 if unknown
+        };
+
+        using MultipartFieldHandler = std::function<bool(const MultipartFieldInfo &info, Stream &content)>;
+
+        bool hasMultipartField(const String &name) const;
+        String multipartField(const String &name) const;
+        void onMultipart(MultipartFieldHandler handler) const;
 
     private:
         friend class Server;
@@ -82,12 +104,23 @@ namespace EspHttpServer
         void setPathInfo(const String &path, const std::vector<std::pair<String, String>> &params);
         void clearPathInfo();
         bool ensureCookiesParsed() const;
+        bool ensureQueryParsed() const;
+        bool ensureFormParsed() const;
+        bool parseUrlEncoded(const String &text, std::vector<std::pair<String, String>> &out) const;
+        static bool decodeComponent(const String &input, String &output);
+        static bool isUrlEncodedContentType(const String &contentType);
 
         httpd_req_t *_raw = nullptr;
         String _normalizedPath = "/";
         std::vector<std::pair<String, String>> _pathParams;
         mutable bool _cookiesParsed = false;
         mutable std::vector<std::pair<String, String>> _cookies;
+        mutable bool _queryParsed = false;
+        mutable std::vector<std::pair<String, String>> _queryParams;
+        mutable bool _formParsed = false;
+        mutable bool _formOverflow = false;
+        mutable std::vector<std::pair<String, String>> _formParams;
+        static size_t _maxFormSize;
     };
 
     // en: Response facade implementing the high-level API from SPEC.md.

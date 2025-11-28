@@ -18,6 +18,8 @@
 namespace EspHttpServer
 {
 
+    size_t Request::_maxFormSize = 8 * 1024;
+
     namespace
     {
         const char *TAG = "EspHttpServer";
@@ -290,6 +292,84 @@ namespace EspHttpServer
             }
         }
 
+        bool parseUrlEncodedInternal(const String &input, std::vector<std::pair<String, String>> &out)
+        {
+            auto decode = [](const String &in, String &decoded) -> bool
+            {
+                decoded.clear();
+                decoded.reserve(in.length());
+                auto hexToInt = [](char c) -> int
+                {
+                    if (c >= '0' && c <= '9')
+                        return c - '0';
+                    if (c >= 'a' && c <= 'f')
+                        return c - 'a' + 10;
+                    if (c >= 'A' && c <= 'F')
+                        return c - 'A' + 10;
+                    return -1;
+                };
+                for (size_t i = 0; i < in.length(); ++i)
+                {
+                    char c = in.charAt(i);
+                    if (c == '+')
+                    {
+                        decoded += ' ';
+                        continue;
+                    }
+                    if (c == '%' && i + 2 < in.length())
+                    {
+                        int hi = hexToInt(in.charAt(i + 1));
+                        int lo = hexToInt(in.charAt(i + 2));
+                        if (hi >= 0 && lo >= 0)
+                        {
+                            decoded += static_cast<char>((hi << 4) | lo);
+                            i += 2;
+                            continue;
+                        }
+                        return false;
+                    }
+                    decoded += c;
+                }
+                return true;
+            };
+
+            size_t start = 0;
+            while (start <= input.length())
+            {
+                int amp = input.indexOf('&', start);
+                if (amp < 0)
+                {
+                    amp = input.length();
+                }
+                String token = input.substring(start, amp);
+                int eq = token.indexOf('=');
+                String rawKey;
+                String rawVal;
+                if (eq >= 0)
+                {
+                    rawKey = token.substring(0, eq);
+                    rawVal = token.substring(eq + 1);
+                }
+                else
+                {
+                    rawKey = token;
+                    rawVal = String();
+                }
+                String keyDecoded;
+                String valDecoded;
+                if (!rawKey.isEmpty() && decode(rawKey, keyDecoded) && decode(rawVal, valDecoded) && !containsControlChars(keyDecoded) && !containsControlChars(valDecoded))
+                {
+                    out.push_back({keyDecoded, valDecoded});
+                }
+                start = static_cast<size_t>(amp) + 1;
+                if (amp == static_cast<int>(input.length()))
+                {
+                    break;
+                }
+            }
+            return true;
+        }
+
     } // namespace
 
     class StaticInputStream
@@ -423,6 +503,282 @@ namespace EspHttpServer
             }
         }
         return false;
+    }
+
+    bool Request::decodeComponent(const String &input, String &output)
+    {
+        output.clear();
+        output.reserve(input.length());
+        auto hexToInt = [](char c) -> int
+        {
+            if (c >= '0' && c <= '9')
+                return c - '0';
+            if (c >= 'a' && c <= 'f')
+                return c - 'a' + 10;
+            if (c >= 'A' && c <= 'F')
+                return c - 'A' + 10;
+            return -1;
+        };
+
+        for (size_t i = 0; i < input.length(); ++i)
+        {
+            char c = input.charAt(i);
+            if (c == '+')
+            {
+                output += ' ';
+                continue;
+            }
+            if (c == '%' && i + 2 < input.length())
+            {
+                int hi = hexToInt(input.charAt(i + 1));
+                int lo = hexToInt(input.charAt(i + 2));
+                if (hi >= 0 && lo >= 0)
+                {
+                    output += static_cast<char>((hi << 4) | lo);
+                    i += 2;
+                    continue;
+                }
+                return false;
+            }
+            output += c;
+        }
+        return true;
+    }
+
+    bool Request::ensureQueryParsed() const
+    {
+        if (_queryParsed)
+        {
+            return true;
+        }
+        _queryParsed = true;
+        const String fullUri = uri();
+        int qPos = fullUri.indexOf('?');
+        if (qPos < 0 || qPos + 1 >= fullUri.length())
+        {
+            return true;
+        }
+        String queryStr = fullUri.substring(qPos + 1);
+        parseUrlEncodedInternal(queryStr, _queryParams);
+        return true;
+    }
+
+    bool Request::ensureFormParsed() const
+    {
+        if (_formParsed)
+        {
+            return !_formOverflow;
+        }
+        _formParsed = true;
+        _formOverflow = false;
+        if (!_raw)
+        {
+            return true;
+        }
+
+        size_t contentLength = _raw->content_len;
+        if (contentLength == 0)
+        {
+            return true;
+        }
+
+        char ctypeBuf[64] = {0};
+        String contentType;
+        size_t ctypeLen = httpd_req_get_hdr_value_len(_raw, "Content-Type");
+        if (ctypeLen > 0 && ctypeLen < sizeof(ctypeBuf))
+        {
+            if (httpd_req_get_hdr_value_str(_raw, "Content-Type", ctypeBuf, sizeof(ctypeBuf)) == ESP_OK)
+            {
+                contentType = String(ctypeBuf);
+            }
+        }
+        if (contentType.isEmpty() && _raw->content_type)
+        {
+            contentType = String(_raw->content_type);
+        }
+
+        if (!isUrlEncodedContentType(contentType))
+        {
+            return true;
+        }
+
+        if (contentLength > _maxFormSize)
+        {
+            _formOverflow = true;
+            httpd_resp_send_err(_raw, HTTPD_400_BAD_REQUEST, "Form too large");
+            return false;
+        }
+
+        std::unique_ptr<char[]> body(new (std::nothrow) char[contentLength + 1]);
+        if (!body)
+        {
+            _formOverflow = true;
+            return false;
+        }
+        size_t received = 0;
+        while (received < contentLength)
+        {
+            const size_t toRead = std::min(static_cast<size_t>(1024), contentLength - received);
+            int ret = httpd_req_recv(_raw, body.get() + received, toRead);
+            if (ret <= 0)
+            {
+                _formOverflow = true;
+                return false;
+            }
+            received += static_cast<size_t>(ret);
+        }
+        body[contentLength] = '\0';
+        String formText(body.get());
+        parseUrlEncodedInternal(formText, _formParams);
+        return true;
+    }
+
+    bool Request::parseUrlEncoded(const String &text, std::vector<std::pair<String, String>> &out) const
+    {
+        return parseUrlEncodedInternal(text, out);
+    }
+
+    bool Request::isUrlEncodedContentType(const String &contentType)
+    {
+        if (contentType.isEmpty())
+        {
+            return false;
+        }
+        String lower = contentType;
+        lower.toLowerCase();
+        return lower.startsWith("application/x-www-form-urlencoded");
+    }
+
+    bool Request::hasQueryParam(const String &name) const
+    {
+        if (name.isEmpty())
+        {
+            return false;
+        }
+        ensureQueryParsed();
+        for (auto it = _queryParams.rbegin(); it != _queryParams.rend(); ++it)
+        {
+            if (it->first == name)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    String Request::queryParam(const String &name) const
+    {
+        if (name.isEmpty())
+        {
+            return String();
+        }
+        ensureQueryParsed();
+        for (auto it = _queryParams.rbegin(); it != _queryParams.rend(); ++it)
+        {
+            if (it->first == name)
+            {
+                return it->second;
+            }
+        }
+        return String();
+    }
+
+    void Request::forEachQueryParam(std::function<bool(const String &name, const String &value)> cb) const
+    {
+        if (!cb)
+        {
+            return;
+        }
+        ensureQueryParsed();
+        for (const auto &kv : _queryParams)
+        {
+            if (!cb(kv.first, kv.second))
+            {
+                break;
+            }
+        }
+    }
+
+    bool Request::hasFormParam(const String &name) const
+    {
+        if (name.isEmpty())
+        {
+            return false;
+        }
+        if (!ensureFormParsed())
+        {
+            return false;
+        }
+        for (auto it = _formParams.rbegin(); it != _formParams.rend(); ++it)
+        {
+            if (it->first == name)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    String Request::formParam(const String &name) const
+    {
+        if (name.isEmpty())
+        {
+            return String();
+        }
+        if (!ensureFormParsed())
+        {
+            return String();
+        }
+        for (auto it = _formParams.rbegin(); it != _formParams.rend(); ++it)
+        {
+            if (it->first == name)
+            {
+                return it->second;
+            }
+        }
+        return String();
+    }
+
+    void Request::forEachFormParam(std::function<bool(const String &name, const String &value)> cb) const
+    {
+        if (!cb)
+        {
+            return;
+        }
+        if (!ensureFormParsed())
+        {
+            return;
+        }
+        for (const auto &kv : _formParams)
+        {
+            if (!cb(kv.first, kv.second))
+            {
+                break;
+            }
+        }
+    }
+
+    void Request::setMaxFormSize(size_t bytes)
+    {
+        _maxFormSize = bytes;
+    }
+
+    bool Request::hasMultipartField(const String &name) const
+    {
+        (void)name;
+        return false;
+    }
+
+    String Request::multipartField(const String &name) const
+    {
+        (void)name;
+        return String();
+    }
+
+    void Request::onMultipart(MultipartFieldHandler handler) const
+    {
+        (void)handler;
+        // Streaming multipart parsing is not implemented in this version.
     }
 
     bool Request::ensureCookiesParsed() const
