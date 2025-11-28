@@ -1,0 +1,87 @@
+<!doctype html>
+<html>
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title data-bind="title"></title>
+    <script src="https://unpkg.com/plainbind@latest/dist/plainbind.min.js"></script>
+    <style>
+        body {
+            font-family: system-ui, -apple-system, "Noto Sans JP", sans-serif;
+            padding: 24px;
+            line-height: 1.6;
+            background: #0f172a;
+            color: #e5e7eb;
+        }
+
+        section {
+            margin-bottom: 18px;
+        }
+
+        .card {
+            background: #111827;
+            border: 1px solid #1f2937;
+            border-radius: 12px;
+            padding: 16px;
+        }
+
+        input {
+            width: 100%;
+            padding: 10px;
+            border-radius: 10px;
+            border: 1px solid #1f2937;
+            background: #0b1220;
+            color: #e5e7eb;
+        }
+
+        button {
+            padding: 10px 14px;
+            border: none;
+            border-radius: 10px;
+            background: #38bdf8;
+            color: #0b1220;
+            font-weight: 600;
+            cursor: pointer;
+        }
+
+        code {
+            background: #1f2937;
+            padding: 2px 6px;
+            border-radius: 6px;
+        }
+
+        .muted {
+            color: #9ca3af;
+        }
+
+        .flash {
+            color: #fbbf24;
+        }
+    </style>
+</head>
+
+<body>
+    <h1 data-bind="title"></h1>
+    <p class="muted">固定 ID/PASS: <code data-bind="credentials.id"></code> / <code data-bind="credentials.pass"></code>
+    </p>
+    <p class="flash" data-bind="message"></p>
+
+    <section class="card" data-hide="session.loggedIn">
+        <h2>ログイン</h2>
+        <form method="POST" action="/login">
+            <div><label>ユーザーID<input name="id" autocomplete="username"></label></div>
+            <div><label>パスワード<input type="password" name="pass" autocomplete="current-password"></label></div>
+            <button type="submit">ログイン</button>
+        </form>
+    </section>
+
+    <section class="card" data-show="session.loggedIn">
+        <h2>ログイン中</h2>
+        <p>ユーザー: <strong data-bind="session.user"></strong></p>
+        <form method="POST" action="/logout"><button type="submit">ログアウト</button></form>
+    </section>
+
+</body>
+
+</html>
