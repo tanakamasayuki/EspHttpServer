@@ -165,6 +165,7 @@ namespace EspHttpServer
         fs::FS *_staticFs = nullptr;
         const uint8_t *_memData = nullptr;
         size_t _memSize = 0;
+        std::vector<std::unique_ptr<char[]>> _setCookieBuffers;
         char _statusBuffer[16] = {0};
         static ErrorRenderer _errorRenderer;
     };

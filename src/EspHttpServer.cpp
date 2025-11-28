@@ -566,6 +566,7 @@ namespace EspHttpServer
         _lastStatusCode = 0;
         _requestContext = nullptr;
         _responseCommitted = false;
+        _setCookieBuffers.clear();
     }
 
     void Response::setTemplateHandler(TemplateHandler handler)
@@ -916,7 +917,16 @@ namespace EspHttpServer
             break;
         }
 
-        httpd_resp_set_hdr(_raw, "Set-Cookie", header.c_str());
+        size_t len = header.length();
+        std::unique_ptr<char[]> buf(new (std::nothrow) char[len + 1]);
+        if (!buf)
+        {
+            ESP_LOGE(TAG, "cookie header alloc failed");
+            return;
+        }
+        memcpy(buf.get(), header.c_str(), len + 1);
+        httpd_resp_set_hdr(_raw, "Set-Cookie", buf.get());
+        _setCookieBuffers.push_back(std::move(buf));
     }
 
     void Response::clearCookie(const String &name, const String &path)
