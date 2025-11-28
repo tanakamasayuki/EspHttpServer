@@ -28,6 +28,8 @@ void setup()
 
   if (!server.begin())
   {
+    // en: Abort if the server fails to start.
+    // ja: サーバー起動に失敗したら処理を終了。
     Serial.println("Failed to start server");
     return;
   }
