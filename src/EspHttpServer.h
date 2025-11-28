@@ -31,6 +31,25 @@ namespace EspHttpServer
         String logicalPath;
     };
 
+    struct Cookie
+    {
+        enum SameSite
+        {
+            None,
+            Lax,
+            Strict
+        };
+
+        String name;
+        String value;
+        String path = "/";
+        String domain;
+        int maxAge = -1; // <0 -> session cookie
+        bool httpOnly = true;
+        bool secure = false;
+        SameSite sameSite = Lax;
+    };
+
     class Request;
     class Response;
     class StaticInputStream;
@@ -53,16 +72,22 @@ namespace EspHttpServer
         const String &path() const { return _normalizedPath; }
         String pathParam(const String &key) const;
         bool hasPathParam(const String &key) const;
+        bool hasCookie(const String &name) const;
+        String cookie(const String &name) const;
+        void forEachCookie(std::function<bool(const String &name, const String &value)> cb) const;
 
     private:
         friend class Server;
 
         void setPathInfo(const String &path, const std::vector<std::pair<String, String>> &params);
         void clearPathInfo();
+        bool ensureCookiesParsed() const;
 
         httpd_req_t *_raw = nullptr;
         String _normalizedPath = "/";
         std::vector<std::pair<String, String>> _pathParams;
+        mutable bool _cookiesParsed = false;
+        mutable std::vector<std::pair<String, String>> _cookies;
     };
 
     // en: Response facade implementing the high-level API from SPEC.md.
@@ -104,6 +129,9 @@ namespace EspHttpServer
 
         void setStaticInfo(const StaticInfo &info);
 
+        void setCookie(const Cookie &cookie);
+        void clearCookie(const String &name, const String &path = "/");
+
     private:
         friend class Server;
 
@@ -140,6 +168,31 @@ namespace EspHttpServer
         char _statusBuffer[16] = {0};
         static ErrorRenderer _errorRenderer;
     };
+
+    struct SessionConfig
+    {
+        String cookieName = "sid";
+        int maxAgeSeconds = 7 * 24 * 3600; // <0 -> session cookie
+        String path = "/";
+        bool secure = false;
+        bool httpOnly = true;
+        Cookie::SameSite sameSite = Cookie::SameSite::Lax;
+        size_t idBytes = 16; // 128-bit
+        std::function<String()> generate;
+        std::function<bool(const String &)> validate;
+        std::function<void(const String &oldId, const String &newId)> onRotate;
+    };
+
+    struct SessionInfo
+    {
+        String id;
+        bool isNew = false;
+        bool rotated = false;
+    };
+
+    SessionInfo beginSession(Request &req, Response &res, const SessionConfig &cfg);
+    SessionInfo rotateSession(SessionInfo &cur, Response &res, const SessionConfig &cfg);
+    void touchSessionCookie(SessionInfo &cur, Response &res, const SessionConfig &cfg);
 
     // en: Minimal server wrapper coordinating route and static registrations.
     // ja: ルートと静的ハンドラを束ねる最小限のサーバークラス。

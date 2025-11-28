@@ -1,6 +1,7 @@
 #include "EspHttpServer.h"
 
 #include <esp_log.h>
+#include <esp_system.h>
 #include <cstring>
 #include <algorithm>
 #include <cctype>
@@ -264,6 +265,31 @@ namespace EspHttpServer
             return result;
         }
 
+        bool containsControlChars(const String &text)
+        {
+            for (size_t i = 0; i < text.length(); ++i)
+            {
+                const unsigned char c = static_cast<unsigned char>(text.charAt(i));
+                if (c < 0x20 || c == 0x7f)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        void trimSpaces(String &text)
+        {
+            while (text.length() > 0 && isspace(static_cast<unsigned char>(text.charAt(0))))
+            {
+                text.remove(0, 1);
+            }
+            while (text.length() > 0 && isspace(static_cast<unsigned char>(text.charAt(text.length() - 1))))
+            {
+                text.remove(text.length() - 1, 1);
+            }
+        }
+
     } // namespace
 
     class StaticInputStream
@@ -397,6 +423,124 @@ namespace EspHttpServer
             }
         }
         return false;
+    }
+
+    bool Request::ensureCookiesParsed() const
+    {
+        if (_cookiesParsed)
+        {
+            return true;
+        }
+        _cookiesParsed = true;
+        if (!_raw)
+        {
+            return false;
+        }
+
+        size_t len = httpd_req_get_hdr_value_len(_raw, "Cookie");
+        if (len == 0)
+        {
+            return true;
+        }
+        std::unique_ptr<char[]> buffer(new (std::nothrow) char[len + 1]);
+        if (!buffer)
+        {
+            ESP_LOGE(TAG, "cookie buffer alloc failed");
+            return false;
+        }
+        if (httpd_req_get_hdr_value_str(_raw, "Cookie", buffer.get(), len + 1) != ESP_OK)
+        {
+            ESP_LOGW(TAG, "failed to read Cookie header");
+            return false;
+        }
+
+        auto processToken = [&](const String &token) {
+            String working = token;
+            trimSpaces(working);
+            if (working.isEmpty())
+            {
+                return;
+            }
+            int eq = working.indexOf('=');
+            if (eq < 0)
+            {
+                return;
+            }
+            String name = working.substring(0, eq);
+            String value = working.substring(eq + 1);
+            trimSpaces(name);
+            trimSpaces(value);
+            if (name.isEmpty() || containsControlChars(name) || containsControlChars(value))
+            {
+                return;
+            }
+            _cookies.push_back({name, value});
+        };
+
+        String token;
+        for (size_t i = 0; i < len; ++i)
+        {
+            const char c = buffer[i];
+            if (c == ';')
+            {
+                processToken(token);
+                token.clear();
+                continue;
+            }
+            token += c;
+        }
+        processToken(token);
+        return true;
+    }
+
+    bool Request::hasCookie(const String &name) const
+    {
+        if (name.isEmpty())
+        {
+            return false;
+        }
+        ensureCookiesParsed();
+        for (const auto &kv : _cookies)
+        {
+            if (kv.first == name)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    String Request::cookie(const String &name) const
+    {
+        if (name.isEmpty())
+        {
+            return String();
+        }
+        ensureCookiesParsed();
+        for (const auto &kv : _cookies)
+        {
+            if (kv.first == name)
+            {
+                return kv.second;
+            }
+        }
+        return String();
+    }
+
+    void Request::forEachCookie(std::function<bool(const String &name, const String &value)> cb) const
+    {
+        if (!cb)
+        {
+            return;
+        }
+        ensureCookiesParsed();
+        for (const auto &kv : _cookies)
+        {
+            if (!cb(kv.first, kv.second))
+            {
+                break;
+            }
+        }
     }
 
     void Request::setPathInfo(const String &path, const std::vector<std::pair<String, String>> &params)
@@ -702,6 +846,87 @@ namespace EspHttpServer
     void Response::setStaticInfo(const StaticInfo &info)
     {
         _staticInfo = info;
+    }
+
+    void Response::setCookie(const Cookie &cookie)
+    {
+        if (!_raw)
+        {
+            return;
+        }
+        if (_responseCommitted)
+        {
+            ESP_LOGW(TAG, "Set-Cookie after commit ignored");
+            return;
+        }
+        if (cookie.name.isEmpty() || containsControlChars(cookie.name) || containsControlChars(cookie.value))
+        {
+            ESP_LOGW(TAG, "invalid cookie skipped");
+            return;
+        }
+
+        Cookie::SameSite sameSite = cookie.sameSite;
+        bool secure = cookie.secure;
+        if (sameSite == Cookie::SameSite::None && !secure)
+        {
+            secure = true;
+        }
+
+        String header;
+        header.reserve(cookie.name.length() + cookie.value.length() + 64);
+        header += cookie.name;
+        header += "=";
+        header += cookie.value;
+
+        if (!cookie.path.isEmpty())
+        {
+            header += "; Path=";
+            header += cookie.path;
+        }
+        if (!cookie.domain.isEmpty())
+        {
+            header += "; Domain=";
+            header += cookie.domain;
+        }
+        if (cookie.maxAge >= 0)
+        {
+            header += "; Max-Age=";
+            header += String(cookie.maxAge);
+        }
+        if (secure)
+        {
+            header += "; Secure";
+        }
+        if (cookie.httpOnly)
+        {
+            header += "; HttpOnly";
+        }
+        header += "; SameSite=";
+        switch (sameSite)
+        {
+        case Cookie::SameSite::None:
+            header += "None";
+            break;
+        case Cookie::SameSite::Strict:
+            header += "Strict";
+            break;
+        case Cookie::SameSite::Lax:
+        default:
+            header += "Lax";
+            break;
+        }
+
+        httpd_resp_set_hdr(_raw, "Set-Cookie", header.c_str());
+    }
+
+    void Response::clearCookie(const String &name, const String &path)
+    {
+        Cookie c;
+        c.name = name;
+        c.value = "";
+        c.path = path;
+        c.maxAge = 0;
+        setCookie(c);
     }
 
     void Response::setStaticFileSystem(fs::FS *fs)
@@ -1106,6 +1331,145 @@ namespace EspHttpServer
             return false;
         }
         return httpd_resp_send_chunk(_raw, nullptr, 0) == ESP_OK;
+    }
+
+    namespace
+    {
+        String defaultSessionId(size_t idBytes)
+        {
+            const size_t bytes = idBytes > 0 ? idBytes : 16;
+            String out;
+            out.reserve(bytes * 2);
+            static const char kHex[] = "0123456789abcdef";
+            for (size_t i = 0; i < bytes; ++i)
+            {
+                uint8_t b = static_cast<uint8_t>(esp_random() & 0xFF);
+                out += kHex[(b >> 4) & 0x0F];
+                out += kHex[b & 0x0F];
+            }
+            return out;
+        }
+
+        bool defaultValidateSessionId(const String &id, size_t idBytes)
+        {
+            if (id.isEmpty())
+            {
+                return false;
+            }
+            size_t minLen = idBytes ? (idBytes * 2) / 3 : 8;
+            if (minLen < 8)
+            {
+                minLen = 8;
+            }
+            if (id.length() < minLen)
+            {
+                return false;
+            }
+            for (size_t i = 0; i < id.length(); ++i)
+            {
+                const unsigned char c = static_cast<unsigned char>(id.charAt(i));
+                if (!(isalnum(c) || c == '-' || c == '_' || c == '.'))
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        Cookie buildSessionCookie(const SessionConfig &cfg, const String &value)
+        {
+            Cookie c;
+            c.name = cfg.cookieName.isEmpty() ? String("sid") : cfg.cookieName;
+            c.value = value;
+            c.path = cfg.path.isEmpty() ? String("/") : cfg.path;
+            c.maxAge = cfg.maxAgeSeconds;
+            c.secure = cfg.secure;
+            c.httpOnly = cfg.httpOnly;
+            c.sameSite = cfg.sameSite;
+            return c;
+        }
+    } // namespace
+
+    SessionInfo beginSession(Request &req, Response &res, const SessionConfig &cfg)
+    {
+        SessionInfo info;
+
+        const String cookieName = cfg.cookieName.isEmpty() ? String("sid") : cfg.cookieName;
+        const String existing = req.cookie(cookieName);
+
+        bool valid = false;
+        if (!existing.isEmpty())
+        {
+            if (cfg.validate)
+            {
+                valid = cfg.validate(existing);
+            }
+            else
+            {
+                valid = defaultValidateSessionId(existing, cfg.idBytes);
+            }
+        }
+
+        if (valid)
+        {
+            info.id = existing;
+            info.isNew = false;
+        }
+        else
+        {
+            info.id = cfg.generate ? cfg.generate() : defaultSessionId(cfg.idBytes);
+            if (info.id.isEmpty())
+            {
+                info.id = defaultSessionId(cfg.idBytes);
+            }
+            info.isNew = true;
+        }
+        info.rotated = false;
+
+        if (!info.id.isEmpty() && (info.isNew || cfg.maxAgeSeconds >= 0))
+        {
+            Cookie c = buildSessionCookie(cfg, info.id);
+            res.setCookie(c);
+        }
+
+        return info;
+    }
+
+    SessionInfo rotateSession(SessionInfo &cur, Response &res, const SessionConfig &cfg)
+    {
+        SessionInfo updated = cur;
+        const String oldId = cur.id;
+        updated.id = cfg.generate ? cfg.generate() : defaultSessionId(cfg.idBytes);
+        if (updated.id.isEmpty())
+        {
+            updated.id = defaultSessionId(cfg.idBytes);
+        }
+        updated.rotated = true;
+        updated.isNew = false;
+
+        if (!updated.id.isEmpty())
+        {
+            Cookie c = buildSessionCookie(cfg, updated.id);
+            res.setCookie(c);
+        }
+
+        if (cfg.onRotate && !oldId.isEmpty() && !updated.id.isEmpty())
+        {
+            cfg.onRotate(oldId, updated.id);
+        }
+
+        cur = updated;
+        return updated;
+    }
+
+    void touchSessionCookie(SessionInfo &cur, Response &res, const SessionConfig &cfg)
+    {
+        if (cur.id.isEmpty() || cfg.maxAgeSeconds < 0)
+        {
+            return;
+        }
+        Cookie c = buildSessionCookie(cfg, cur.id);
+        res.setCookie(c);
     }
 
     // -------- Server --------
