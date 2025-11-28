@@ -592,11 +592,6 @@ namespace EspHttpServer
                 contentType = String(ctypeBuf);
             }
         }
-        if (contentType.isEmpty() && _raw->content_type)
-        {
-            contentType = String(_raw->content_type);
-        }
-
         if (!isUrlEncodedContentType(contentType))
         {
             return true;
@@ -633,11 +628,6 @@ namespace EspHttpServer
         return true;
     }
 
-    bool Request::parseUrlEncoded(const String &text, std::vector<std::pair<String, String>> &out) const
-    {
-        return parseUrlEncodedInternal(text, out);
-    }
-
     bool Request::isUrlEncodedContentType(const String &contentType)
     {
         if (contentType.isEmpty())
@@ -647,6 +637,190 @@ namespace EspHttpServer
         String lower = contentType;
         lower.toLowerCase();
         return lower.startsWith("application/x-www-form-urlencoded");
+    }
+
+    bool Request::extractBoundary(const String &contentType, String &boundaryOut)
+    {
+        boundaryOut.clear();
+        if (contentType.isEmpty())
+        {
+            return false;
+        }
+        String lower = contentType;
+        lower.toLowerCase();
+        int pos = lower.indexOf("boundary=");
+        if (pos < 0)
+        {
+            return false;
+        }
+        String rest = contentType.substring(pos + 9);
+        rest.trim();
+        if (rest.startsWith("\""))
+        {
+            int endQuote = rest.indexOf('"', 1);
+            if (endQuote > 1)
+            {
+                boundaryOut = rest.substring(1, endQuote);
+            }
+        }
+        else
+        {
+            int semi = rest.indexOf(';');
+            if (semi >= 0)
+            {
+                boundaryOut = rest.substring(0, semi);
+            }
+            else
+            {
+                boundaryOut = rest;
+            }
+        }
+        boundaryOut.trim();
+        return !boundaryOut.isEmpty();
+    }
+
+    bool Request::ensureMultipartParsed() const
+    {
+        if (_multipartParsed)
+        {
+            return !_multipartOverflow;
+        }
+        _multipartParsed = true;
+        _multipartOverflow = false;
+        if (!_raw)
+        {
+            return true;
+        }
+
+        size_t contentLength = _raw->content_len;
+        if (contentLength == 0)
+        {
+            return true;
+        }
+
+        char ctypeBuf[128] = {0};
+        String contentType;
+        size_t ctypeLen = httpd_req_get_hdr_value_len(_raw, "Content-Type");
+        if (ctypeLen > 0 && ctypeLen < sizeof(ctypeBuf))
+        {
+            if (httpd_req_get_hdr_value_str(_raw, "Content-Type", ctypeBuf, sizeof(ctypeBuf)) == ESP_OK)
+            {
+                contentType = String(ctypeBuf);
+            }
+        }
+        String boundary;
+        if (!extractBoundary(contentType, boundary) || boundary.isEmpty())
+        {
+            return true;
+        }
+
+        if (contentLength > _maxFormSize)
+        {
+            _multipartOverflow = true;
+            httpd_resp_send_err(_raw, HTTPD_400_BAD_REQUEST, "Multipart too large");
+            return false;
+        }
+
+        std::unique_ptr<char[]> body(new (std::nothrow) char[contentLength + 1]);
+        if (!body)
+        {
+            _multipartOverflow = true;
+            return false;
+        }
+        size_t received = 0;
+        while (received < contentLength)
+        {
+            const size_t toRead = std::min(static_cast<size_t>(1024), contentLength - received);
+            int ret = httpd_req_recv(_raw, body.get() + received, toRead);
+            if (ret <= 0)
+            {
+                _multipartOverflow = true;
+                return false;
+            }
+            received += static_cast<size_t>(ret);
+        }
+        body[contentLength] = '\0';
+        String payload(body.get());
+
+        const String boundaryToken = "--" + boundary;
+        size_t pos = 0;
+        while (true)
+        {
+            int start = payload.indexOf(boundaryToken, pos);
+            if (start < 0)
+            {
+                break;
+            }
+            start += boundaryToken.length();
+            if (payload.startsWith("--", start))
+            {
+                break; // closing boundary
+            }
+            if (payload.startsWith("\r\n", start))
+            {
+                start += 2;
+            }
+            int headerEnd = payload.indexOf("\r\n\r\n", start);
+            if (headerEnd < 0)
+            {
+                break;
+            }
+            String headerBlock = payload.substring(start, headerEnd);
+            int nextBoundary = payload.indexOf("\r\n" + boundaryToken, headerEnd + 4);
+            if (nextBoundary < 0)
+            {
+                break;
+            }
+            String contentData = payload.substring(headerEnd + 4, nextBoundary);
+
+            MultipartField field;
+            field.info.size = contentData.length();
+
+            int dispPos = headerBlock.indexOf("Content-Disposition:");
+            if (dispPos >= 0)
+            {
+                String disp = headerBlock.substring(dispPos);
+                int namePos = disp.indexOf("name=");
+                if (namePos >= 0)
+                {
+                    int firstQuote = disp.indexOf('"', namePos);
+                    int secondQuote = disp.indexOf('"', firstQuote + 1);
+                    if (firstQuote >= 0 && secondQuote > firstQuote)
+                    {
+                        field.info.name = disp.substring(firstQuote + 1, secondQuote);
+                    }
+                }
+                int filePos = disp.indexOf("filename=");
+                if (filePos >= 0)
+                {
+                    int fq = disp.indexOf('"', filePos);
+                    int sq = disp.indexOf('"', fq + 1);
+                    if (fq >= 0 && sq > fq)
+                    {
+                        field.info.filename = disp.substring(fq + 1, sq);
+                    }
+                }
+            }
+
+            int ctypePos = headerBlock.indexOf("Content-Type:");
+            if (ctypePos >= 0)
+            {
+                int lineEnd = headerBlock.indexOf("\r\n", ctypePos);
+                String ctLine = (lineEnd > ctypePos) ? headerBlock.substring(ctypePos + 13, lineEnd) : headerBlock.substring(ctypePos + 13);
+                ctLine.trim();
+                field.info.contentType = ctLine;
+            }
+
+            field.data = contentData;
+            _multipartFields.push_back(field);
+            pos = static_cast<size_t>(nextBoundary + 2); // skip leading CRLF before boundary
+        }
+        return true;
+    }
+
+    bool Request::parseUrlEncoded(const String &text, std::vector<std::pair<String, String>> &out) const
+    {
+        return parseUrlEncodedInternal(text, out);
     }
 
     bool Request::hasQueryParam(const String &name) const
@@ -693,6 +867,95 @@ namespace EspHttpServer
         for (const auto &kv : _queryParams)
         {
             if (!cb(kv.first, kv.second))
+            {
+                break;
+            }
+        }
+    }
+
+    bool Request::hasMultipartField(const String &name) const
+    {
+        if (name.isEmpty())
+        {
+            return false;
+        }
+        if (!ensureMultipartParsed())
+        {
+            return false;
+        }
+        for (auto it = _multipartFields.rbegin(); it != _multipartFields.rend(); ++it)
+        {
+            if (it->info.name == name)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    String Request::multipartField(const String &name) const
+    {
+        if (name.isEmpty())
+        {
+            return String();
+        }
+        if (!ensureMultipartParsed())
+        {
+            return String();
+        }
+        for (auto it = _multipartFields.rbegin(); it != _multipartFields.rend(); ++it)
+        {
+            if (it->info.name == name)
+            {
+                return it->data;
+            }
+        }
+        return String();
+    }
+
+    void Request::onMultipart(MultipartFieldHandler handler) const
+    {
+        if (!handler)
+        {
+            return;
+        }
+        if (!ensureMultipartParsed())
+        {
+            return;
+        }
+        for (const auto &field : _multipartFields)
+        {
+            struct MemoryStream : public Stream
+            {
+                const String &data;
+                size_t pos = 0;
+                explicit MemoryStream(const String &d) : data(d) {}
+                int available() override { return static_cast<int>(data.length() - pos); }
+                int read() override
+                {
+                    if (pos >= data.length())
+                        return -1;
+                    return static_cast<unsigned char>(data.charAt(pos++));
+                }
+                int peek() override
+                {
+                    if (pos >= data.length())
+                        return -1;
+                    return static_cast<unsigned char>(data.charAt(pos));
+                }
+                size_t readBytes(char *buffer, size_t len) override
+                {
+                    size_t remain = data.length() - pos;
+                    size_t toCopy = std::min(remain, len);
+                    memcpy(buffer, data.c_str() + pos, toCopy);
+                    pos += toCopy;
+                    return toCopy;
+                }
+                void flush() override {}
+                size_t write(uint8_t) override { return 0; }
+            } stream(field.data);
+
+            if (!handler(field.info, stream))
             {
                 break;
             }
@@ -761,24 +1024,6 @@ namespace EspHttpServer
     void Request::setMaxFormSize(size_t bytes)
     {
         _maxFormSize = bytes;
-    }
-
-    bool Request::hasMultipartField(const String &name) const
-    {
-        (void)name;
-        return false;
-    }
-
-    String Request::multipartField(const String &name) const
-    {
-        (void)name;
-        return String();
-    }
-
-    void Request::onMultipart(MultipartFieldHandler handler) const
-    {
-        (void)handler;
-        // Streaming multipart parsing is not implemented in this version.
     }
 
     bool Request::ensureCookiesParsed() const

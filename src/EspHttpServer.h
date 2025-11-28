@@ -106,9 +106,11 @@ namespace EspHttpServer
         bool ensureCookiesParsed() const;
         bool ensureQueryParsed() const;
         bool ensureFormParsed() const;
+        bool ensureMultipartParsed() const;
         bool parseUrlEncoded(const String &text, std::vector<std::pair<String, String>> &out) const;
         static bool decodeComponent(const String &input, String &output);
         static bool isUrlEncodedContentType(const String &contentType);
+        static bool extractBoundary(const String &contentType, String &boundaryOut);
 
         httpd_req_t *_raw = nullptr;
         String _normalizedPath = "/";
@@ -120,6 +122,14 @@ namespace EspHttpServer
         mutable bool _formParsed = false;
         mutable bool _formOverflow = false;
         mutable std::vector<std::pair<String, String>> _formParams;
+        mutable bool _multipartParsed = false;
+        mutable bool _multipartOverflow = false;
+        struct MultipartField
+        {
+            MultipartFieldInfo info;
+            String data;
+        };
+        mutable std::vector<MultipartField> _multipartFields;
         static size_t _maxFormSize;
     };
 
