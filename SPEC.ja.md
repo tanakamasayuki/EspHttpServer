@@ -260,7 +260,75 @@ void onNotFound(RouteHandler handler);
 - Debug レベルでは個人情報が含まれる可能性があるため、開発時のみ使用する。
 - Arduino IDE/CLI の **Core Debug Level** 設定（`CORE_DEBUG_LEVEL`）でビルド時に決定され、`ESP_LOGx` の出力レベルへ反映される（デフォルトの `None` はすべてのログを抑制する）。
 
-## 9. 使用例
+## 9. Cookie / セッション
+
+### 9.1 Cookie ヘルパー
+- Request 取得
+```
+bool hasCookie(const String& name) const;
+String cookie(const String& name) const;
+void forEachCookie(std::function<bool(const String& name,
+                                      const String& value)> cb) const;
+```
+  - `Cookie` ヘッダーを 1 度だけパースしてキャッシュ。`cb` が false を返すと中断。
+- Set-Cookie
+```
+struct Cookie {
+    String name;
+    String value;
+    String path = "/";
+    String domain;
+    int    maxAge = -1; // <0 ならセッション Cookie
+    bool   httpOnly = true;
+    bool   secure   = false;
+    enum SameSite { None, Lax, Strict } sameSite = Lax;
+};
+
+void setCookie(const Cookie& c);
+void clearCookie(const String& name,
+                 const String& path = "/"); // Max-Age=0 で削除
+```
+- バリデーション: name/value に制御文字や改行があれば破棄。`SameSite=None` 時は `secure=true` を強制。値は URL デコードしない（生値）。
+- メモリ方針: 単一行のトークン分割のみで余計な `String` コピーを避ける。`setCookie()` は複数回呼べる（ヘッダー追記）。
+
+### 9.2 セッション ID ヘルパー
+- 設定
+```
+struct SessionConfig {
+    String cookieName = "sid";
+    int    maxAgeSeconds = 7*24*3600; // <0 ならセッション Cookie
+    String path = "/";
+    bool   secure = false;
+    bool   httpOnly = true;
+    Cookie::SameSite sameSite = Cookie::SameSite::Lax;
+    size_t idBytes = 16; // 128bit
+    std::function<String()> generate; // 未設定なら esp_random → base64url/hex
+    std::function<bool(const String&)> validate; // false なら無効扱い
+    std::function<void(const String& oldId,
+                       const String& newId)> onRotate; // 任意: ストレージ移行通知
+};
+```
+- API
+```
+struct SessionInfo { String id; bool isNew; bool rotated; };
+
+SessionInfo beginSession(Request& req, Response& res,
+                         const SessionConfig& cfg);
+SessionInfo rotateSession(SessionInfo& cur,
+                          Response& res,
+                          const SessionConfig& cfg);
+void touchSessionCookie(SessionInfo& cur,
+                        Response& res,
+                        const SessionConfig& cfg);
+```
+- 挙動
+  - `beginSession`: Cookie に既存 ID があれば `validate` して採用、無ければ／無効なら新規発行して `isNew=true`。Max-Age 指定時は TTL 延長のため同じ ID でも Set-Cookie を再送可。
+  - `rotateSession`: 新しい ID を発行しクッキーを上書き、`rotated=true`。`onRotate(old,new)` でデータ移行フックを通知。
+  - `touchSessionCookie`: ID は変えずに Max-Age を再送（アイドル延長用途）。
+- 利用者責務: ID をキーにしたセッションデータの保存／削除、Fixation 対策時のデータコピーは利用者側で行う。
+- 推奨: `httpOnly=true` 固定、デフォルト `sameSite=Lax`。`SameSite=None` なら `secure=true` 必須。HTTPS 環境では `secure=true` を推奨。
+
+## 10. 使用例
 
 ### 動的
 ```

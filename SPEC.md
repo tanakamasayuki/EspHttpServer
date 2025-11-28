@@ -209,9 +209,75 @@ void onNotFound(RouteHandler handler);
 - `sendStatic()` logs `[RESP][STATIC][FS|MEM] 200 /index.html (plain) origin=/wwwroot/index.html` detailing backend and gzip.
 - Default build suppresses logs (Core Debug Level = None). Raising the Core Debug Level to Error/Info/Debug enables progressively more output.
 
----
+## 9. Cookies / Session
 
-## 9. Usage examples
+### 9.1 Cookie helpers
+- Request helpers
+```
+bool hasCookie(const String& name) const;
+String cookie(const String& name) const;
+void forEachCookie(std::function<bool(const String& name,
+                                      const String& value)> cb) const;
+```
+  - Parses the `Cookie` header once and caches it. Stops early when `cb` returns false.
+- Set-Cookie
+```
+struct Cookie {
+    String name;
+    String value;
+    String path = "/";
+    String domain;
+    int    maxAge = -1; // <0 -> session cookie
+    bool   httpOnly = true;
+    bool   secure   = false;
+    enum SameSite { None, Lax, Strict } sameSite = Lax;
+};
+
+void setCookie(const Cookie& c);
+void clearCookie(const String& name,
+                 const String& path = "/"); // sends Max-Age=0
+```
+- Validation: drop cookies whose name/value contain control chars or newlines. Force `secure=true` when `SameSite=None`. Values stay raw (no URL decoding).
+- Memory: tokenize the single Cookie line, avoid extra `String` copies. `setCookie()` may be called multiple times (headers are appended).
+
+### 9.2 Session ID helper
+- Config
+```
+struct SessionConfig {
+    String cookieName = "sid";
+    int    maxAgeSeconds = 7*24*3600; // <0 -> session cookie
+    String path = "/";
+    bool   secure = false;
+    bool   httpOnly = true;
+    Cookie::SameSite sameSite = Cookie::SameSite::Lax;
+    size_t idBytes = 16; // 128-bit
+    std::function<String()> generate; // default: esp_random -> base64url/hex
+    std::function<bool(const String&)> validate; // return false to reject
+    std::function<void(const String& oldId,
+                       const String& newId)> onRotate; // optional: migration hook
+};
+```
+- API
+```
+struct SessionInfo { String id; bool isNew; bool rotated; };
+
+SessionInfo beginSession(Request& req, Response& res,
+                         const SessionConfig& cfg);
+SessionInfo rotateSession(SessionInfo& cur,
+                          Response& res,
+                          const SessionConfig& cfg);
+void touchSessionCookie(SessionInfo& cur,
+                        Response& res,
+                        const SessionConfig& cfg);
+```
+- Behavior
+  - `beginSession`: if the cookie exists, pass through `validate` and adopt it; otherwise issue a new ID and set `isNew=true`. When `maxAgeSeconds` is set, the same ID can be re-sent via Set-Cookie to extend TTL.
+  - `rotateSession`: issues a new ID, overwrites the cookie, marks `rotated=true`, and calls `onRotate(old,new)` if provided.
+  - `touchSessionCookie`: re-sends Max-Age without changing the ID (idle extension).
+- Caller responsibilities: actual session storage keyed by ID, cleanup, and fixation-safe data migration belong to the application.
+- Recommendations: keep `httpOnly=true`, default `sameSite=Lax`; require `secure=true` when `SameSite=None`; prefer `secure=true` under HTTPS.
+
+## 10. Usage examples
 ```cpp
 res.setTemplateHandler([](const String& key, Print& out){
     if (key == "name") { out.print("TANAKA"); return true; }
