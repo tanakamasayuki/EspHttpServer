@@ -243,6 +243,54 @@ void onNotFound(RouteHandler handler);
 - `req.pathParam("name")` で `:name` または `*name` の値を取得
 - `req.hasPathParam("name")` で存在確認
 
+### 7.6 クエリ／フォームパラメータ
+- クエリ（`?a=1&b=2`）と URL エンコードフォーム（`application/x-www-form-urlencoded`）を取得するためのヘルパー。
+- パラメータは 1 度だけパース・キャッシュし、`+`→空白、`%xx` をデコード。複数同名がある場合は最後を採用。
+- 不正な `%xx` や制御文字を含む項目はスキップ。
+
+#### クエリ
+```
+bool hasQueryParam(const String& name) const;
+String queryParam(const String& name) const;
+void forEachQueryParam(std::function<bool(const String& name,
+                                          const String& value)> cb) const;
+```
+- `cb` が false を返すと途中で中断。
+
+#### フォーム（application/x-www-form-urlencoded）
+```
+bool hasFormParam(const String& name) const;
+String formParam(const String& name) const;
+void forEachFormParam(std::function<bool(const String& name,
+                                          const String& value)> cb) const;
+void setMaxFormSize(size_t bytes); // デフォルト 8KB、超過時は 400 を返す
+```
+- Content-Type が `application/x-www-form-urlencoded` のときのみ有効。
+- ボディは 1 回だけ読み取りパースし、キャッシュ済みなら再読込しない。
+- サイズ上限を超える場合は 400 を返す（上限は変更可）。
+
+#### マルチパート（multipart/form-data）
+- 省メモリでフィールド単位に扱うための簡易ヘルパー。
+```
+bool hasMultipartField(const String& name) const; // テキストフィールド想定
+String multipartField(const String& name) const;  // サイズが小さい場合のみ
+
+struct MultipartFieldInfo {
+    String name;
+    String filename;
+    String contentType;
+    size_t size; // 不明な場合は 0
+};
+
+using MultipartFieldHandler =
+    std::function<bool(const MultipartFieldInfo& info,
+                       Stream& content)>;
+void onMultipart(MultipartFieldHandler handler);
+```
+- ハンドラはフィールドごとに呼ばれ、`content` を逐次読み取り。`false` を返すと中断。
+- 1 フィールド全体を保持しない設計で、内部バッファは最小限。
+
+
 ## 8. デバッグレベル方針
 
 | レベル | 目的                   | 出力例                                       |

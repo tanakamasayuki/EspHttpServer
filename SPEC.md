@@ -194,6 +194,50 @@ void onNotFound(RouteHandler handler);
 - **Scoring**: literals +3, params +2, wildcards +1; highest score wins, ties resolved by registration order.
 - **Request helpers**: `req.path()` (normalized path), `req.pathParam("name")`, `req.hasPathParam("name")`.
 
+### 7.1 Query / form parameters
+- Helpers to parse `?a=1&b=2` and `application/x-www-form-urlencoded` bodies. Parsed once and cached; `+`→space, `%xx` decoded; duplicates keep the last value; invalid `%xx` or control chars are skipped.
+
+**Query**
+```
+bool hasQueryParam(const String& name) const;
+String queryParam(const String& name) const;
+void forEachQueryParam(std::function<bool(const String& name,
+                                          const String& value)> cb) const;
+```
+- Stops early when `cb` returns false.
+
+**Form (application/x-www-form-urlencoded)**
+```
+bool hasFormParam(const String& name) const;
+String formParam(const String& name) const;
+void forEachFormParam(std::function<bool(const String& name,
+                                          const String& value)> cb) const;
+void setMaxFormSize(size_t bytes); // default 8KB; above this returns 400
+```
+- Only active when `Content-Type` is `application/x-www-form-urlencoded`.
+- Body is read/parsed once; cached thereafter.
+
+**Multipart (multipart/form-data)**
+- Lightweight field-wise helpers to avoid buffering whole uploads.
+```
+bool hasMultipartField(const String& name) const; // text fields expected
+String multipartField(const String& name) const;  // small fields only
+
+struct MultipartFieldInfo {
+    String name;
+    String filename;
+    String contentType;
+    size_t size; // 0 if unknown
+};
+
+using MultipartFieldHandler =
+    std::function<bool(const MultipartFieldInfo& info,
+                       Stream& content)>;
+void onMultipart(MultipartFieldHandler handler);
+```
+- Handler is called per field; `content` is streamed; returning false aborts.
+- Designed to avoid holding entire fields in memory; internal buffers remain small.
+
 ---
 
 ## 8. Logging & debug levels
