@@ -45,14 +45,26 @@ void redirect(const char* location, int status = 302);
 - Arduino IDE の **Core Debug Level**（None/Error/Info/Debug）で `ESP_LOGx` 出力を制御。`None` は `ESP_LOGE` も含めて完全抑制。
 - `[RESP]` ログはフォーマットが統一されているため、テストやトレース時の grep が容易です。
 
-## サンプル（`examples/`）
-- **BasicDynamic** – Hello world 的な動的レスポンス。
-- **ChunkedStream** – チャンク転送で JSON を配信。
-- **TemplateHead** – テンプレート処理と Head Injection の組み合わせ。
-- **StaticFS** – `/data` を LittleFS/SPIFFS にアップロードして配信。
-- **EmbeddedAssetsSimple** – VS Code 拡張で生成したヘッダ資産を `/embed` で提供。
-- **PathParams** – `req.pathParam()` による `:id` や `*path` の取得例。
-- **ErrorHandling** – `Response::setErrorRenderer()` と `onNotFound()` で共通エラーページを描画。
+## サンプル（[`examples/`](examples/)）
+
+各スケッチは `arduino_secrets.h` があればそこから Wi-Fi 設定を読み込み、なければ
+スケッチ内の `WIFI_SSID` / `WIFI_PASS` プレースホルダーを使用します。
+
+| サンプル | アクセス先 | 主な内容 |
+| --- | --- | --- |
+| [BasicDynamic](examples/BasicDynamic/) | `GET /` | `sendText()` でプレーンテキストを返す最小の動的ルート。 |
+| [ChunkedStream](examples/ChunkedStream/) | `GET /stream` | `beginChunked()`、`sendChunk()`、`endChunked()` で JSON をストリーム送信。 |
+| [CookieSimple](examples/CookieSimple/) | `GET /` | 訪問回数 Cookie の取得・設定・削除と、その値を HTML テンプレートへ反映する例。 |
+| [EmbeddedAssetsSimple](examples/EmbeddedAssetsSimple/) | `GET /embed/` | 生成済みのメモリアセットを `serveStatic()` で配信し、存在しないパスを index ページへリダイレクト。 |
+| [ErrorHandling](examples/ErrorHandling/) | `GET /ok`、`GET /fail`、または存在しないパス | グローバルな `Response::setErrorRenderer()`、明示的な `sendError()`、`onNotFound()` の組み合わせ。 |
+| [FormParamsSimple](examples/FormParamsSimple/) | `GET /` → `POST /submit` | `application/x-www-form-urlencoded` の値を `formParam()` で取得し、`forEachFormParam()` で列挙。 |
+| [LoginPlainBind](examples/LoginPlainBind/) | `GET /` → `POST /login` | 埋め込み PlainBind UI、Head Injection した JSON、フォームによるログイン／ログアウト、AssocTree に保存するサーバー側セッションの組み合わせ。このスケッチでは `AssocTree` と `EspHelper` も使用します。 |
+| [MultipartParamsSimple](examples/MultipartParamsSimple/) | `GET /` → `POST /upload` | `onMultipart()` で multipart フィールドとファイル内容をストリーム処理。 |
+| [PathParams](examples/PathParams/) | `GET /users/...` または `GET /files/...` | 名前付き `:parameter`、末尾の `*wildcard`、`pathParam()` による値の取得。 |
+| [QueryParamsSimple](examples/QueryParamsSimple/) | `GET /?name=esp32&lang=ja` | 名前付きクエリパラメーターの取得と全パラメーターの列挙。 |
+| [SessionSimple](examples/SessionSimple/) | `GET /` | 固定 16 スロットのインメモリーストアを使ったセッション ID の作成・ローテーション・削除。 |
+| [StaticFS](examples/StaticFS/) | `GET /www/` | LittleFS 上の `data/wwwroot` を `/www` で公開し、index 探索と SPA フォールバックを実行。起動前にスケッチの `data/` ディレクトリをアップロードします。 |
+| [TemplateHead](examples/TemplateHead/) | `GET /template` | エスケープあり／なしのテンプレート置換と `setHeadInjection()` を同じ HTML レスポンスで使用。 |
 
 ## ツールワークフロー
 - [Arduino CLI Wrapper](https://marketplace.visualstudio.com/items?itemName=tanakamasayuki.vscode-arduino-cli-wrapper) 拡張は `data/` フォルダの LittleFS/SPIFFS へのアップロードや、アセットフォルダのヘッダ変換（gzip/minify 対応）を自動化します。
