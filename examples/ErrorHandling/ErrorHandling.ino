@@ -1,3 +1,5 @@
+// en: Customize error and not-found responses
+// ja: ErrorとNot Foundの応答を変更する
 #include <WiFi.h>
 #include <EspHttpServer.h>
 
@@ -20,6 +22,8 @@ void setup()
     delay(200);
   }
 
+  // en: Initialize this component after its prerequisites; inspect the returned status where provided.
+  // ja: 前提となる機器を準備してから初期化し、結果を返すAPIでは成否を確認します。
   if (!server.begin())
   {
     Serial.println("Failed to start server");
@@ -47,6 +51,8 @@ void setup()
         res.sendText(status, "text/html", html);
       });
 
+  // en: Register the route path and HTTP method; the handler receives request-scoped objects.
+  // ja: PathとHTTP Methodを登録します。Handlerのオブジェクトは要求の寿命内で扱います。
   server.on("/ok", HTTP_GET, [](EspHttpServer::Request &req, EspHttpServer::Response &res)
             { (void)req;
               res.sendText(200, "text/plain", "Everything OK"); });

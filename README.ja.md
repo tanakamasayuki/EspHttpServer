@@ -4,6 +4,8 @@
 
 `esp_http_server` をベースにした ESP32/Arduino 用 Web サーバースタックの仕様をまとめたリポジトリです。動的レスポンス、テンプレート/Head Injection、FS・メモリ両対応の静的配信、エラーフック、統一ログなどを一貫したルールで扱えるように整理しています。詳細仕様は [SPEC.ja.md](SPEC.ja.md) を参照してください。
 
+初めて使う場合は[サンプル入門ガイド](docs/GUIDE_EXAMPLES.ja.md)と[各例の日英README](examples/README.ja.md)を参照してください。準備、APIの流れ、確認方法、組み込み時の注意を説明しています。
+
 ## 特長
 
 - **レスポンス API** – `send()`/`sendText()`/`sendStatic()`/`sendFile()`、チャンク送信、リダイレクト、`sendError()` とグローバル `ErrorRenderer` を備えたレスポンス経路。

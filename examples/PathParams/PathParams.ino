@@ -1,3 +1,5 @@
+// en: Extract values from a matched route path
+// ja: 一致したルートのPathから値を取り出す
 #include <WiFi.h>
 #include <EspHttpServer.h>
 
@@ -21,9 +23,13 @@ void setup()
   }
 
   const String ipStr = WiFi.localIP().toString();
+  // en: Initialize this component after its prerequisites; inspect the returned status where provided.
+  // ja: 前提となる機器を準備してから初期化し、結果を返すAPIでは成否を確認します。
   server.begin();
   Serial.printf("Param demo ready: http://%s/\n", ipStr.c_str());
 
+  // en: Register the route path and HTTP method; the handler receives request-scoped objects.
+  // ja: PathとHTTP Methodを登録します。Handlerのオブジェクトは要求の寿命内で扱います。
   server.on("/users/:userId/orders/:orderId/items/:itemId", HTTP_GET,
             [](EspHttpServer::Request &req, EspHttpServer::Response &res)
             {

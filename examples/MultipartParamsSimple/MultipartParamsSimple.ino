@@ -1,3 +1,5 @@
+// en: Consume multipart form fields and uploaded content
+// ja: MultipartのForm項目とアップロードを読み取る
 #include <WiFi.h>
 #include <EspHttpServer.h>
 
@@ -53,6 +55,8 @@ void handleUpload(EspHttpServer::Request &req, EspHttpServer::Response &res)
 )HTML";
 
   String list;
+  // en: Consume each scoped content stream; accepting an upload does not save it automatically.
+  // ja: 各Content Streamを寿命内で消費します。受け付けても自動で保存されるわけではありません。
   req.onMultipart([&](const EspHttpServer::Request::MultipartFieldInfo &info, Stream &content) {
     list += "<li><strong>" + info.name + "</strong>";
     if (!info.filename.isEmpty())
@@ -108,11 +112,15 @@ void setup()
     delay(200);
   }
 
+  // en: Register the route path and HTTP method; the handler receives request-scoped objects.
+  // ja: PathとHTTP Methodを登録します。Handlerのオブジェクトは要求の寿命内で扱います。
   server.on("/", HTTP_GET, [](EspHttpServer::Request &req, EspHttpServer::Response &res) {
     (void)req;
     renderForm(res);
   });
   server.on("/upload", HTTP_POST, handleUpload);
+  // en: Initialize this component after its prerequisites; inspect the returned status where provided.
+  // ja: 前提となる機器を準備してから初期化し、結果を返すAPIでは成否を確認します。
   server.begin();
   Serial.printf("Server ready: http://%s/\n", WiFi.localIP().toString().c_str());
 }

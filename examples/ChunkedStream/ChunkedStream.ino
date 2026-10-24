@@ -1,3 +1,5 @@
+// en: Send and finish a chunked HTTP response
+// ja: HTTP応答を分割送信して完了させる
 #include <WiFi.h>
 #include <EspHttpServer.h>
 
@@ -21,6 +23,8 @@ void setup()
   }
 
   const String ipStr = WiFi.localIP().toString();
+  // en: Initialize this component after its prerequisites; inspect the returned status where provided.
+  // ja: 前提となる機器を準備してから初期化し、結果を返すAPIでは成否を確認します。
   server.begin();
   Serial.printf("Server ready: http://%s/stream\n", ipStr.c_str());
 

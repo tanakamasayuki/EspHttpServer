@@ -4,6 +4,8 @@
 
 This repository documents a lightweight HTTP server stack for ESP32/Arduino built on top of `esp_http_server`. The goal is to ship a coherent set of behaviors—dynamic handlers, template & head injections, filesystem/in-memory static serving with gzip, and consistent error hooks—so that sketches can follow the same rules. The full specification lives in [SPEC.md](SPEC.md).
 
+Start with the [example workflow](docs/GUIDE_EXAMPLES.md) and [individual example READMEs](examples/README.md) for setup, API sequence, verification and adaptation notes.
+
 ## Highlights
 
 - **Response Stack** – `send()`/`sendText()`/`sendStatic()`/`sendFile()` plus chunked helpers, redirects, and a `sendError()` path that feeds a global `ErrorRenderer`.

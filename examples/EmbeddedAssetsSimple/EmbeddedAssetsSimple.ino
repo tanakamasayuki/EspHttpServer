@@ -1,3 +1,5 @@
+// en: Serve assets compiled into the firmware
+// ja: ファームウェアに埋め込んだ素材を配信する
 #include <WiFi.h>
 #include <EspHttpServer.h>
 
@@ -26,6 +28,8 @@ void setup()
 
   const String ipStr = WiFi.localIP().toString();
 
+  // en: Initialize this component after its prerequisites; inspect the returned status where provided.
+  // ja: 前提となる機器を準備してから初期化し、結果を返すAPIでは成否を確認します。
   if (!server.begin())
   {
     // en: Abort if the server fails to start.

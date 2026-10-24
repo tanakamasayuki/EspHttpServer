@@ -1,3 +1,5 @@
+// en: Create and clear cookie-based session identifiers
+// ja: CookieによるSession識別子を作り削除する
 #include <WiFi.h>
 #include <EspHttpServer.h>
 #include <stdlib.h>
@@ -226,9 +228,13 @@ void setup()
         delay(500);
     }
 
+    // en: Register the route path and HTTP method; the handler receives request-scoped objects.
+    // ja: PathとHTTP Methodを登録します。Handlerのオブジェクトは要求の寿命内で扱います。
     server.on("/", HTTP_GET, handleHome);
     server.on("/rotate", HTTP_POST, handleRotate);
     server.on("/clear", HTTP_POST, handleClear);
+    // en: Initialize this component after its prerequisites; inspect the returned status where provided.
+    // ja: 前提となる機器を準備してから初期化し、結果を返すAPIでは成否を確認します。
     server.begin();
 
     Serial.printf("Server ready: http://%s/\n", WiFi.localIP().toString().c_str());

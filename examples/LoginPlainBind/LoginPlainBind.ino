@@ -1,3 +1,5 @@
+// en: Demonstrate login state and HTML data binding
+// ja: ログイン状態とHTMLへのデータ反映を試す
 #include <WiFi.h>
 #include <EspHttpServer.h>
 #include <EspHelperJsonGenerator.h>
@@ -62,6 +64,8 @@ void clearSession(const String &sid)
 {
   auto node = sessionStore["sessions"][sid.c_str()];
   node.unset();
+  // en: Compact the tree pool and reacquire all attached references afterwards.
+  // ja: Treeの領域を詰め直すので、あとで参照を取り直します。
   sessionStore.gc();
 }
 
@@ -84,6 +88,8 @@ String buildHeadJson(const SessionData &session, const String &message)
 
   gen.setString("message", message);
   gen.endObject();
+  // en: Finalize the generated structure and check capacity/error status before using the output.
+  // ja: 生成中の構造を完了し、容量／Errorを確認してから出力を使います。
   gen.finish();
   return String(buffer);
 }
@@ -103,6 +109,8 @@ void renderHome(EspHttpServer::Request &req, EspHttpServer::Response &res, const
 {
   (void)req;
   setHeadData(res, session, message);
+  // en: Submit the supplied data and check the API-specific result; acceptance is different from later processing.
+  // ja: データを渡して対象APIの結果を確認します。受理されたことと後の処理完了は別です。
   res.send(200, "text/html", assets_index_html, assets_index_html_len);
 }
 
@@ -157,9 +165,13 @@ void setup()
     delay(200);
   }
 
+  // en: Register the route path and HTTP method; the handler receives request-scoped objects.
+  // ja: PathとHTTP Methodを登録します。Handlerのオブジェクトは要求の寿命内で扱います。
   server.on("/", HTTP_GET, handleHome);
   server.on("/login", HTTP_POST, handleLogin);
   server.on("/logout", HTTP_POST, handleLogout);
+  // en: Initialize this component after its prerequisites; inspect the returned status where provided.
+  // ja: 前提となる機器を準備してから初期化し、結果を返すAPIでは成否を確認します。
   server.begin();
 
   Serial.printf("Server ready: http://%s/\n", WiFi.localIP().toString().c_str());
